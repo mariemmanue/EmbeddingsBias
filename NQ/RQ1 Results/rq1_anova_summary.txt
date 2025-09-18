@@ -1,0 +1,81 @@
+=== OLS ANOVA (Δ ~ identity_category) ===
+                          sum_sq         df            F  PR(>F)
+C(identity_category)    5.421253       10.0  2628.608999     0.0
+Residual              413.431297  2004609.0          NaN     NaN
+
+=== Group means/SD/n/Cohen d ===
+                         mean       std       n  cohens_d
+identity_category                                        
+Age                 -0.004666  0.012799  156624 -0.364581
+Disability_status   -0.008419  0.016448  197014 -0.511852
+Gender_identity     -0.005379  0.013857  189518 -0.388182
+Nationality         -0.008878  0.015761  162672 -0.563293
+Physical_appearance -0.005949  0.014029  157120 -0.424067
+Race_ethnicity      -0.005330  0.012793  329708 -0.416673
+Race_x_SES          -0.008609  0.016406  328580 -0.524736
+Race_x_gender       -0.005611  0.013049  328944 -0.429980
+Religion            -0.010085  0.016448   29264 -0.613137
+SES                 -0.004623  0.012659  110274 -0.365206
+Sexual_orientation  -0.005117  0.013583   14902 -0.376718
+
+=== Tukey HSD (pairwise) ===
+             Multiple Comparison of Means - Tukey HSD, FWER=0.05              
+==============================================================================
+       group1              group2       meandiff p-adj   lower   upper  reject
+------------------------------------------------------------------------------
+                Age   Disability_status  -0.0038    0.0 -0.0039 -0.0036   True
+                Age     Gender_identity  -0.0007    0.0 -0.0009 -0.0006   True
+                Age         Nationality  -0.0042    0.0 -0.0044  -0.004   True
+                Age Physical_appearance  -0.0013    0.0 -0.0014 -0.0011   True
+                Age      Race_ethnicity  -0.0007    0.0 -0.0008 -0.0005   True
+                Age          Race_x_SES  -0.0039    0.0 -0.0041 -0.0038   True
+                Age       Race_x_gender  -0.0009    0.0 -0.0011 -0.0008   True
+                Age            Religion  -0.0054    0.0 -0.0057 -0.0051   True
+                Age                 SES      0.0 0.9996 -0.0001  0.0002  False
+                Age  Sexual_orientation  -0.0005 0.0114 -0.0008 -0.0001   True
+  Disability_status     Gender_identity    0.003    0.0  0.0029  0.0032   True
+  Disability_status         Nationality  -0.0005    0.0 -0.0006 -0.0003   True
+  Disability_status Physical_appearance   0.0025    0.0  0.0023  0.0026   True
+  Disability_status      Race_ethnicity   0.0031    0.0   0.003  0.0032   True
+  Disability_status          Race_x_SES  -0.0002 0.0002 -0.0003 -0.0001   True
+  Disability_status       Race_x_gender   0.0028    0.0  0.0027  0.0029   True
+  Disability_status            Religion  -0.0017    0.0  -0.002 -0.0014   True
+  Disability_status                 SES   0.0038    0.0  0.0036   0.004   True
+  Disability_status  Sexual_orientation   0.0033    0.0  0.0029  0.0037   True
+    Gender_identity         Nationality  -0.0035    0.0 -0.0037 -0.0033   True
+    Gender_identity Physical_appearance  -0.0006    0.0 -0.0007 -0.0004   True
+    Gender_identity      Race_ethnicity      0.0 0.9854 -0.0001  0.0002  False
+    Gender_identity          Race_x_SES  -0.0032    0.0 -0.0034 -0.0031   True
+    Gender_identity       Race_x_gender  -0.0002    0.0 -0.0004 -0.0001   True
+    Gender_identity            Religion  -0.0047    0.0  -0.005 -0.0044   True
+    Gender_identity                 SES   0.0008    0.0  0.0006  0.0009   True
+    Gender_identity  Sexual_orientation   0.0003 0.5437 -0.0001  0.0007  False
+        Nationality Physical_appearance   0.0029    0.0  0.0028  0.0031   True
+        Nationality      Race_ethnicity   0.0035    0.0  0.0034  0.0037   True
+        Nationality          Race_x_SES   0.0003    0.0  0.0001  0.0004   True
+        Nationality       Race_x_gender   0.0033    0.0  0.0031  0.0034   True
+        Nationality            Religion  -0.0012    0.0 -0.0015 -0.0009   True
+        Nationality                 SES   0.0043    0.0  0.0041  0.0044   True
+        Nationality  Sexual_orientation   0.0038    0.0  0.0034  0.0042   True
+Physical_appearance      Race_ethnicity   0.0006    0.0  0.0005  0.0008   True
+Physical_appearance          Race_x_SES  -0.0027    0.0 -0.0028 -0.0025   True
+Physical_appearance       Race_x_gender   0.0003    0.0  0.0002  0.0005   True
+Physical_appearance            Religion  -0.0041    0.0 -0.0044 -0.0038   True
+Physical_appearance                 SES   0.0013    0.0  0.0011  0.0015   True
+Physical_appearance  Sexual_orientation   0.0008    0.0  0.0004  0.0012   True
+     Race_ethnicity          Race_x_SES  -0.0033    0.0 -0.0034 -0.0032   True
+     Race_ethnicity       Race_x_gender  -0.0003    0.0 -0.0004 -0.0002   True
+     Race_ethnicity            Religion  -0.0048    0.0  -0.005 -0.0045   True
+     Race_ethnicity                 SES   0.0007    0.0  0.0005  0.0009   True
+     Race_ethnicity  Sexual_orientation   0.0002 0.7942 -0.0002  0.0006  False
+         Race_x_SES       Race_x_gender    0.003    0.0  0.0029  0.0031   True
+         Race_x_SES            Religion  -0.0015    0.0 -0.0018 -0.0012   True
+         Race_x_SES                 SES    0.004    0.0  0.0038  0.0041   True
+         Race_x_SES  Sexual_orientation   0.0035    0.0  0.0031  0.0039   True
+      Race_x_gender            Religion  -0.0045    0.0 -0.0048 -0.0042   True
+      Race_x_gender                 SES    0.001    0.0  0.0008  0.0011   True
+      Race_x_gender  Sexual_orientation   0.0005  0.002  0.0001  0.0009   True
+           Religion                 SES   0.0055    0.0  0.0052  0.0058   True
+           Religion  Sexual_orientation    0.005    0.0  0.0045  0.0054   True
+                SES  Sexual_orientation  -0.0005  0.004 -0.0009 -0.0001   True
+------------------------------------------------------------------------------
