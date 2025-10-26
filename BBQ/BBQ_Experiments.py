@@ -17,7 +17,17 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 sns.set_theme(style="whitegrid", context="talk")
 from matplotlib.ticker import FuncFormatter
-# from datetime import datetime, timedelta
+
+from datetime import datetime, timedelta
+import random
+SEED = int(os.environ.get("SEED", "123"))
+random.seed(SEED)
+np.random.seed(SEED)
+torch.manual_seed(SEED)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed_all(SEED)
+
+    
 
 # ---- model-specific imports----
 _HAS_LLAMA4 = False
@@ -1407,10 +1417,6 @@ def build_parser():
 def main():
     args = build_parser().parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
-
-    torch.manual_seed(123)
-    np.random.seed(123)
-
     # --------- Resolve dataframe ---------
     if args.df_path:
         df = load_df_any(args.df_path)
