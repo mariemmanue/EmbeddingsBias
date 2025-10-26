@@ -11,8 +11,9 @@ from transformers import AutoTokenizer, AutoModel, AutoModelForCausalLM, pipelin
 from datasets import load_dataset, get_dataset_config_names
 
 from scipy import stats
+import matplotlib
+matplotlib.use("Agg")  # must be before pyplot import
 import matplotlib.pyplot as plt
-import textwrap
 import seaborn as sns
 sns.set_theme(style="whitegrid", context="talk")
 from matplotlib.ticker import FuncFormatter
@@ -36,6 +37,13 @@ try:
 except Exception:
     pass
 
+_HAS_ST = False
+try:
+    from sentence_transformers import SentenceTransformer
+    _HAS_ST = True
+except Exception:
+    pass
+
 # Runtime guard for transformers>=4.51.0 (Qwen3 + Llama4 rely on)
 try:
     import transformers as _tf
@@ -48,12 +56,6 @@ except Exception:
 
 VALID_LETTERS = list("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
 
-# safer than hardcoding—type token when the cell runs
-import getpass
-from huggingface_hub import login
-
-token = getpass.getpass("Paste your HF token: ")
-login(token=token)  # persists to your HF cache
 
 def load_bbq_from_hf(dataset_id: str | None = None, revision: str | None = None) -> pd.DataFrame:
     candidates = [dataset_id] if dataset_id else ["heegyu/BBQ", "Elfsong/BBQ", "walledai/BBQ"]
@@ -192,14 +194,7 @@ class Embedder:
     def __init__(self, name_or_path: str, device: str = "auto", dtype: str = "auto", batch_size: int = 64):
         self.name = name_or_path
         self.bs = batch_size
-
-        # Qwen3 embeddings prefer left padding (faster & avoids last-token off-by-one)
         name_l = self.name.lower()
-        if "qwen3-embedding" in name_l or "qwen/" in name_l:
-            try:
-                self.tok.padding_side = "left"
-            except Exception:
-                pass
 
         # device
         if device == "auto":
@@ -228,14 +223,19 @@ class Embedder:
             try:
                 self.st_model = SentenceTransformer(self.name, device=self.device)
                 self.is_sentence_transformer = True
-                # NOTE: ST may print "Creating a new one with mean pooling..." for raw backbones.
-                # That behavior is fine, but we avoid it for known non-ST IDs via the heuristic.
             except Exception:
                 self.st_model = None
                 self.is_sentence_transformer = False
 
         if not self.is_sentence_transformer:
             self.tok = AutoTokenizer.from_pretrained(self.name, use_fast=True)
+            # Qwen embedding models prefer left padding
+            if "qwen3-embedding" in name_l or "qwen/" in name_l:
+                try:
+                    self.tok.padding_side = "left"
+                except Exception:
+                    pass
+
             self.model = AutoModel.from_pretrained(
                 self.name,
                 torch_dtype=self.dtype if self.device != "mps" else None,
@@ -246,6 +246,7 @@ class Embedder:
         else:
             self.tok = None
             self.model = None
+
 
     @torch.no_grad()
     def encode(self, texts: List[str], batch_size: int = None, normalize: bool = True) -> np.ndarray:
@@ -1364,20 +1365,6 @@ def plot_rate_of_choosing(roc_df: pd.DataFrame,
         plt.show(); plt.close(fig)
     return out_files
 
-
-# === Build base df (full) ===
-df = prepare_df_from_hf(dataset_id=None, metadata_csv_path="additional_metadata.csv")
-
-print("SC labels missing after merge:", df["sc_label"].isna().sum())
-print("Context condition 3 distribution:", df["context_condition_3"].value_counts(dropna=False).to_dict())
-
-# === Device suggestion (Macs: MPS/float16; CPU: float32) ===
-if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
-    DEVICE = "mps"; DTYPE  = "float16"
-else:
-    DEVICE = "cpu"; DTYPE  = "float32"
-print("Using:", DEVICE, DTYPE)
-
 # ----------------------------
 # IO helpers + CLI
 # ----------------------------
@@ -1420,6 +1407,9 @@ def build_parser():
 def main():
     args = build_parser().parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
+
+    torch.manual_seed(123)
+    np.random.seed(123)
 
     # --------- Resolve dataframe ---------
     if args.df_path:
