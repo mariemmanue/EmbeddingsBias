@@ -568,7 +568,6 @@ def _load_text_model_and_tool(model_name: str, device: str, torch_dtype):
     model.eval()
     return tok, model, "tokenizer"
 
-
 def evaluate_model_generative(
     df: pd.DataFrame,
     model_name: str,
@@ -587,7 +586,43 @@ def evaluate_model_generative(
     torch_dtype = {"float16": torch.float16, "bfloat16": torch.bfloat16, "float32": torch.float32}[dtype]
 
     print(f"[MODEL] loading {model_name} on {device} (dtype={dtype})")
-    tool, model, tool_kind = _load_text_model_and_tool(model_name, device, torch_dtype)
+
+    is_mistral = "mistral" in model_name.lower()
+    if is_mistral:
+        # --- Mistral 3.x path (needs mistral-common) ---
+        from mistral_common.protocol.instruct.request import ChatCompletionRequest
+        from mistral_common.tokens.tokenizers.mistral import MistralTokenizer
+        from transformers import Mistral3ForConditionalGeneration
+
+        tok = MistralTokenizer.from_hf_hub(model_name)
+        model = Mistral3ForConditionalGeneration.from_pretrained(
+            model_name,
+            torch_dtype=torch_dtype if device in ("cuda","mps") else None,
+            low_cpu_mem_usage=True,
+        ).to(device)
+        model.eval()
+
+        def _mistral_build_inputs(prompt_text: str):
+            # BBQ prompts are text-only; wrap as a single user turn
+            messages = [{"role": "user", "content": [{"type": "text", "text": prompt_text}]}]
+            tokenized = tok.encode_chat_completion(ChatCompletionRequest(messages=messages))
+            input_ids = torch.tensor([tokenized.tokens], device=device)
+            attention_mask = torch.ones_like(input_ids, device=device)
+            return dict(input_ids=input_ids, attention_mask=attention_mask), len(tokenized.tokens)
+
+    else:
+        # --- Generic HF path ---
+        from transformers import AutoTokenizer, AutoModelForCausalLM
+
+        tok = AutoTokenizer.from_pretrained(model_name, use_fast=True)
+        if tok.pad_token_id is None and tok.eos_token_id is not None:
+            tok.pad_token_id = tok.eos_token_id
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            torch_dtype=torch_dtype if device in ("cuda","mps") else None,
+            low_cpu_mem_usage=True,
+        ).to(device)
+        model.eval()
 
 
     os.makedirs(out_dir, exist_ok=True)
@@ -613,14 +648,41 @@ def evaluate_model_generative(
         p_arc  = arc_prompt_paper(context, question, choices)   # context+question + \n + options
 
         if use_logprobs:
-            scores_arc  = score_next_token_logprobs(model, tool, p_arc,  device, letters)
-            scores_race = score_next_token_logprobs(model, tool, p_race, device, letters)
-            pred_arc  = max(scores_arc.items(), key=lambda kv: kv[1])[0] if scores_arc  else generate_letter(model, tool, p_arc, device)
-            pred_race = max(scores_race.items(), key=lambda kv: kv[1])[0] if scores_race else generate_letter(model, tool, p_race, device)
+            scores_arc  = score_next_token_logprobs(model, tok, p_arc, device, letters)
+            scores_race = score_next_token_logprobs(model, tok, p_race, device, letters)
+            pred_arc  = max(scores_arc.items(), key=lambda kv: kv[1])[0] if scores_arc  else generate_letter(model, tok, p_arc, device)
+            pred_race = max(scores_race.items(), key=lambda kv: kv[1])[0] if scores_race else generate_letter(model, tok, p_race, device)
         else:
             scores_arc, scores_race = {}, {}
-            pred_arc  = generate_letter(model, tool, p_arc,  device)
-            pred_race = generate_letter(model, tool, p_race, device)
+            if is_mistral:
+                # ARC
+                inputs_arc, cut_arc = _mistral_build_inputs(p_arc)
+                with torch.no_grad():
+                    gen_arc = model.generate(**inputs_arc, max_new_tokens=2, do_sample=False, temperature=0.0)
+                dec_arc = tok.decode(gen_arc[0][cut_arc:])
+                pred_arc = first_letter(dec_arc)
+
+                # RACE
+                inputs_race, cut_race = _mistral_build_inputs(p_race)
+                with torch.no_grad():
+                    gen_race = model.generate(**inputs_race, max_new_tokens=2, do_sample=False, temperature=0.0)
+                dec_race = tok.decode(gen_race[0][cut_race:])
+                pred_race = first_letter(dec_race)
+
+                # we’re not using logprobs for Mistral in this minimal path
+                scores_arc, scores_race = {}, {}
+            else:
+                # existing generic path
+                if use_logprobs:
+                    scores_arc  = score_next_token_logprobs(model, tok, p_arc,  device, letters)
+                    scores_race = score_next_token_logprobs(model, tok, p_race, device, letters)
+                    pred_arc  = max(scores_arc.items(), key=lambda kv: kv[1])[0] if scores_arc  else generate_letter(model, tok, p_arc, device)
+                    pred_race = max(scores_race.items(), key=lambda kv: kv[1])[0] if scores_race else generate_letter(model, tok, p_race, device)
+                else:
+                    scores_arc, scores_race = {}, {}
+                    pred_arc  = generate_letter(model, tok, p_arc,  device)
+                    pred_race = generate_letter(model, tok, p_race, device)
+
 
         acc_arc  = compute_accuracy(pred_arc,  gold)
         acc_race = compute_accuracy(pred_race, gold)
@@ -651,6 +713,7 @@ def evaluate_model_generative(
     rows_df.to_csv(rows_path, index=False)
     print(f"[WRITE] Rows -> {rows_path}")
     return rows_df
+
 
 def _row_accuracy(pred: str | None, gold: str | None) -> float:
     if pred is None or gold is None: return 0.0
