@@ -7,7 +7,7 @@ from tqdm import tqdm
 import textwrap
 
 import torch
-from transformers import AutoTokenizer, AutoModel, AutoModelForCausalLM
+from transformers import AutoTokenizer, AutoModel, AutoModelForCausalLM, pipeline
 from datasets import load_dataset, get_dataset_config_names
 
 from scipy import stats
@@ -16,12 +16,35 @@ import textwrap
 import seaborn as sns
 sns.set_theme(style="whitegrid", context="talk")
 from matplotlib.ticker import FuncFormatter
+# from datetime import datetime, timedelta
+
+# ---- model-specific imports----
+_HAS_LLAMA4 = False
+_HAS_MISTRAL_SPECIAL = False
+try:
+    from transformers import Llama4ForConditionalGeneration, AutoProcessor
+    _HAS_LLAMA4 = True
+except Exception:
+    pass
 
 try:
-    from sentence_transformers import SentenceTransformer
-    _HAS_ST = True
+    from mistral_common.protocol.instruct.request import ChatCompletionRequest
+    from mistral_common.tokens.tokenizers.mistral import MistralTokenizer
+    from huggingface_hub import hf_hub_download
+    from transformers import Mistral3ForConditionalGeneration
+    _HAS_MISTRAL_SPECIAL = True
 except Exception:
-    _HAS_ST = False
+    pass
+
+# Runtime guard for transformers>=4.51.0 (Qwen3 + Llama4 rely on)
+try:
+    import transformers as _tf
+    from packaging import version as _pkg_version
+    if _pkg_version.parse(_tf.__version__) < _pkg_version.parse("4.51.0"):
+        print(f"[WARN] transformers {_tf.__version__} detected; some models (Qwen3/Llama-4) need >=4.51.0")
+except Exception:
+    pass
+
 
 VALID_LETTERS = list("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
 
@@ -169,6 +192,14 @@ class Embedder:
     def __init__(self, name_or_path: str, device: str = "auto", dtype: str = "auto", batch_size: int = 64):
         self.name = name_or_path
         self.bs = batch_size
+
+        # Qwen3 embeddings prefer left padding (faster & avoids last-token off-by-one)
+        name_l = self.name.lower()
+        if "qwen3-embedding" in name_l or "qwen/" in name_l:
+            try:
+                self.tok.padding_side = "left"
+            except Exception:
+                pass
 
         # device
         if device == "auto":
@@ -376,31 +407,55 @@ def first_letter(text: str) -> Optional[str]:
             return ch
     return None
 
-def score_next_token_logprobs(model, tok, prompt: str, device: str, candidate_letters: List[str]) -> Dict[str, float]:
-    inputs = tok(prompt, return_tensors="pt").to(device)
+def score_next_token_logprobs(model, tool, prompt: str, device: str, candidate_letters: List[str]) -> Dict[str, float]:
+    inputs = _build_inputs_for_prompt(tool, prompt, device)
     with torch.no_grad():
         out = model(**inputs)
         next_logits = out.logits[:, -1, :]
         logp = torch.log_softmax(next_logits, dim=-1)
+
+    # Build candidate token IDs using a plain tokenizer if possible
+    # If tool is a Processor, try to grab its tokenizer
+    tok = getattr(tool, "tokenizer", tool)
+
     scores = {}
     for letter in candidate_letters:
         variants = [letter, " " + letter, letter + ")", "(" + letter + ")", letter + ".", letter + ":"]
         ids = []
         for v in variants:
-            toks = tok(v, add_special_tokens=False).input_ids
-            if len(toks) == 1: ids.append(toks[0])
+            try:
+                toks = tok(v, add_special_tokens=False).input_ids
+                if len(toks) == 1:
+                    ids.append(toks[0])
+            except Exception:
+                pass
         if ids:
             scores[letter] = float(torch.max(logp[0, ids]))
     return scores
 
-def generate_letter(model, tok, prompt: str, device: str, max_new_tokens: int = 2) -> Optional[str]:
-    inputs = tok(prompt, return_tensors="pt").to(device)
+def generate_letter(model, tool, prompt: str, device: str, max_new_tokens: int = 2) -> Optional[str]:
+    inputs = _build_inputs_for_prompt(tool, prompt, device)
     with torch.no_grad():
         gen = model.generate(
             **inputs, max_new_tokens=max_new_tokens, do_sample=False,
-            temperature=0.0, pad_token_id=tok.eos_token_id,
+            temperature=0.0
         )
-    return first_letter(tok.decode(gen[0][inputs.input_ids.shape[1]:], skip_special_tokens=True))
+    # Determine where new tokens start
+    if "input_ids" in inputs and hasattr(inputs["input_ids"], "shape"):
+        cut = inputs["input_ids"].shape[1]
+    else:
+        cut = 0
+    # Prefer a decode method on tool.tokenizer, else tool itself
+    tok = getattr(tool, "tokenizer", tool)
+    try:
+        decoded = tok.decode(gen[0][cut:], skip_special_tokens=True)
+    except Exception:
+        # Fallback: if Processor returns text through batch_decode
+        try:
+            decoded = tool.batch_decode(gen[:, cut:])[0]
+        except Exception:
+            decoded = ""
+    return first_letter(decoded)
 
 def compute_accuracy(pred: Optional[str], gold: Optional[str]) -> int:
     if not pred or not gold: return 0
@@ -457,6 +512,63 @@ def run_generative_for_model(model_name: str, df_ready: pd.DataFrame,
                                 by=["category","context_condition_3"]),
                               save_dir=os.path.join(out_dir, f"{safe}__rate_of_choosing"))
 
+
+def _model_uses_llama4_processor(model_name: str) -> bool:
+    # Llama-4 Scout is multi-modal and exposes an AutoProcessor
+    return ("meta-llama" in model_name.lower()) and ("llama-4" in model_name.lower())
+
+def _build_inputs_for_prompt(tool, prompt: str, device: str):
+    """
+    tool can be AutoTokenizer or AutoProcessor.
+    Returns a dict with input_ids/attention_mask on correct device.
+    """
+    # If it's a processor with chat template (e.g., Llama-4)
+    if hasattr(tool, "apply_chat_template"):
+        # Wrap our plain prompt into a chat turn; no images in BBQ
+        messages = [{"role": "user", "content": [{"type": "text", "text": prompt}]}]
+        inputs = tool.apply_chat_template(
+            messages, add_generation_prompt=True, tokenize=True,
+            return_dict=True, return_tensors="pt"
+        )
+    else:
+        inputs = tool(prompt, return_tensors="pt")
+
+    # Move to device if tensors present
+    for k, v in list(inputs.items()):
+        if hasattr(v, "to"):
+            inputs[k] = v.to(device)
+    return inputs
+
+def _load_text_model_and_tool(model_name: str, device: str, torch_dtype):
+    """
+    Returns (tool, model, tool_kind) where tool is AutoTokenizer or AutoProcessor.
+    tool_kind in {"tokenizer", "processor"}
+    """
+    # Llama-4: prefer AutoProcessor + Llama4ForConditionalGeneration if available
+    if _model_uses_llama4_processor(model_name) and _HAS_LLAMA4:
+        tool = AutoProcessor.from_pretrained(model_name)
+        model = Llama4ForConditionalGeneration.from_pretrained(
+            model_name,
+            torch_dtype=torch_dtype if device in ("cuda", "mps") else None,
+            attn_implementation="flex_attention",
+            device_map=None  # we'll .to(device) below for parity
+        ).to(device)
+        model.eval()
+        return tool, model, "processor"
+
+    # Mistral: AutoTokenizer works fine for text-only MCQ; special path remains optional
+    tok = AutoTokenizer.from_pretrained(model_name, use_fast=True)
+    if tok.pad_token_id is None and tok.eos_token_id is not None:
+        tok.pad_token_id = tok.eos_token_id
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        torch_dtype=torch_dtype if device in ("cuda","mps") else None,
+        low_cpu_mem_usage=True,
+    ).to(device)
+    model.eval()
+    return tok, model, "tokenizer"
+
+
 def evaluate_model_generative(
     df: pd.DataFrame,
     model_name: str,
@@ -475,15 +587,8 @@ def evaluate_model_generative(
     torch_dtype = {"float16": torch.float16, "bfloat16": torch.bfloat16, "float32": torch.float32}[dtype]
 
     print(f"[MODEL] loading {model_name} on {device} (dtype={dtype})")
-    tok = AutoTokenizer.from_pretrained(model_name, use_fast=True)
-    if tok.pad_token_id is None and tok.eos_token_id is not None:
-        tok.pad_token_id = tok.eos_token_id
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        torch_dtype=torch_dtype if device in ("cuda","mps") else None,
-        low_cpu_mem_usage=True,
-    ).to(device)
-    model.eval()
+    tool, model, tool_kind = _load_text_model_and_tool(model_name, device, torch_dtype)
+
 
     os.makedirs(out_dir, exist_ok=True)
     work_df = df if subset is None else df.head(subset)
@@ -508,14 +613,14 @@ def evaluate_model_generative(
         p_arc  = arc_prompt_paper(context, question, choices)   # context+question + \n + options
 
         if use_logprobs:
-            scores_arc  = score_next_token_logprobs(model, tok, p_arc, device, letters)
-            scores_race = score_next_token_logprobs(model, tok, p_race, device, letters)
-            pred_arc  = max(scores_arc.items(), key=lambda kv: kv[1])[0] if scores_arc  else generate_letter(model, tok, p_arc, device)
-            pred_race = max(scores_race.items(), key=lambda kv: kv[1])[0] if scores_race else generate_letter(model, tok, p_race, device)
+            scores_arc  = score_next_token_logprobs(model, tool, p_arc,  device, letters)
+            scores_race = score_next_token_logprobs(model, tool, p_race, device, letters)
+            pred_arc  = max(scores_arc.items(), key=lambda kv: kv[1])[0] if scores_arc  else generate_letter(model, tool, p_arc, device)
+            pred_race = max(scores_race.items(), key=lambda kv: kv[1])[0] if scores_race else generate_letter(model, tool, p_race, device)
         else:
             scores_arc, scores_race = {}, {}
-            pred_arc  = generate_letter(model, tok, p_arc,  device)
-            pred_race = generate_letter(model, tok, p_race, device)
+            pred_arc  = generate_letter(model, tool, p_arc,  device)
+            pred_race = generate_letter(model, tool, p_race, device)
 
         acc_arc  = compute_accuracy(pred_arc,  gold)
         acc_race = compute_accuracy(pred_race, gold)
