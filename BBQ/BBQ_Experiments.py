@@ -20,14 +20,13 @@ from matplotlib.ticker import FuncFormatter
 
 from datetime import datetime, timedelta
 import random
+
 SEED = int(os.environ.get("SEED", "123"))
 random.seed(SEED)
 np.random.seed(SEED)
 torch.manual_seed(SEED)
 if torch.cuda.is_available():
     torch.cuda.manual_seed_all(SEED)
-
-    
 
 # ---- model-specific imports----
 _HAS_LLAMA4 = False
@@ -64,14 +63,14 @@ except Exception:
     pass
 
 
-VALID_LETTERS = list("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+VALID_LETTERS = list("ABCDEFGHIJKLMNOPQRSTUVWXYZ") # Canonical mapping from indices → letters.
 
 
 def load_bbq_from_hf(dataset_id: str | None = None, revision: str | None = None) -> pd.DataFrame:
     candidates = [dataset_id] if dataset_id else ["heegyu/BBQ", "Elfsong/BBQ", "walledai/BBQ"]
-    last_err = None
+    last_err = None # keep last error.
     for ds in candidates:
-        if not ds: 
+        if not ds: # Skip empty names
             continue
         try:
             cfgs = get_dataset_config_names(ds)
@@ -79,37 +78,37 @@ def load_bbq_from_hf(dataset_id: str | None = None, revision: str | None = None)
             if not cfgs:
                 dd = load_dataset(ds, revision=revision)
                 for _, split in dd.items():
-                    frames.append(split.to_pandas())
+                    frames.append(split.to_pandas()) # load all splits, convert to pandas
             else:
                 for cfg in cfgs:
                     dd = load_dataset(ds, name=cfg, revision=revision)
                     for _, split in dd.items():
                         frames.append(split.to_pandas())
-            df = pd.concat(frames, ignore_index=True)
-            print(f"[HF] Loaded {len(df)} rows from '{ds}'")
+            df = pd.concat(frames, ignore_index=True) # concat
+            print(f"[HF] Loaded {len(df)} rows from '{ds}'") # log rows
             return df
         except Exception as e:
             last_err = e
-            print(f"[WARN] Failed to load '{ds}': {e}")
+            print(f"[WARN] Failed to load '{ds}': {e}") # warn and continue
     raise RuntimeError("Could not load BBQ from any mirror.") from last_err
 
 def load_metadata(metadata_csv_path: str) -> pd.DataFrame:
     md = pd.read_csv(
         metadata_csv_path,
         keep_default_na=True,
-        na_values=["NA", "Na", "na", ""],
+        na_values=["NA", "Na", "na", ""], # treat common NA strings as nulls.
         engine="python",  # handles quoted newlines
     )
     # normalize merge keys
-    for col in ["category", "example_id", "question_index"]:
+    for col in ["category", "example_id", "question_index"]: # Normalize join keys (string/trim).
         if col in md.columns:
             md[col] = md[col].astype(str).str.strip()
-    if "target_loc" not in md.columns:
+    if "target_loc" not in md.columns: # Require target_loc
         raise KeyError("Column 'target_loc' not found in additional_metadata.csv")
-    md["target_loc"] = pd.to_numeric(md["target_loc"], errors="coerce").astype("Int64")
+    md["target_loc"] = pd.to_numeric(md["target_loc"], errors="coerce").astype("Int64") # coerces to nullable integer (Int64)
     return md
 
-def prepare_df_from_hf(dataset_id: str | None,
+def prepare_df_from_hf(dataset_id: str | None, # load BBQ + metadata, normalize/merge, derive gold/sc/si/condition labels.
                        metadata_csv_path: str,
                        revision: str | None = None,
                        default_unknown_index: int = 2) -> pd.DataFrame:
@@ -118,7 +117,7 @@ def prepare_df_from_hf(dataset_id: str | None,
     md  = load_metadata(metadata_csv_path)
 
     # 2) Normalize join keys on BOTH sides
-    for col in ["category", "example_id", "question_index"]:
+    for col in ["category", "example_id", "question_index"]: # Enforce presence and normalize join keys on both sides
         if col not in raw.columns:
             raise KeyError(f"HF dataset missing '{col}'")
         raw[col] = raw[col].astype(str).str.strip()
@@ -128,7 +127,7 @@ def prepare_df_from_hf(dataset_id: str | None,
             raise KeyError(f"metadata CSV missing '{col}'")
 
     # 3) Deduplicate raw on the triple key (if multiple splits got concatenated)
-    raw = raw.drop_duplicates(subset=["category", "question_index", "example_id"])
+    raw = raw.drop_duplicates(subset=["category", "question_index", "example_id"]) # Dedup raw across splits by triple-key
 
     # 4) Ensure metadata is unique on the triple key; collapse duplicate rows to first non-null target_loc
     dup_md = (md.groupby(["category","question_index","example_id"])
@@ -141,7 +140,7 @@ def prepare_df_from_hf(dataset_id: str | None,
         md = md[["category","question_index","example_id","target_loc"]].copy()
 
     # 5) Merge m:1
-    df = raw.merge(md, on=["category","question_index","example_id"], how="left", validate="m:1")
+    df = raw.merge(md, on=["category","question_index","example_id"], how="left", validate="m:1") # Left merge many-to-one; throws if multiplicities are wrong
 
     # 6) Derive gold/sc/si/context_condition_3
     golds, scs, sis, cc3 = [], [], [], []
@@ -150,21 +149,21 @@ def prepare_df_from_hf(dataset_id: str | None,
         n = len(choices)
 
         # UNKNOWN index by text; fallback to index 2 when 3 choices and unknown not detected
-        unk_idx = next((j for j in range(n) if is_unknown_text(choices[j])), None)
-        if unk_idx is None and n == 3 and 0 <= default_unknown_index < 3:
+        unk_idx = next((j for j in range(n) if is_unknown_text(choices[j])), None) # Try to locate “unknown” option by text
+        if unk_idx is None and n == 3 and 0 <= default_unknown_index < 3: # default to index 2 in 3-choice sets.
             unk_idx = default_unknown_index
 
-        tl = r.get("target_loc", pd.NA)
+        tl = r.get("target_loc", pd.NA) # Stereotype-consistent answer index from metadata (bounds-checked)
         sc_idx = int(tl) if pd.notna(tl) and 0 <= int(tl) < n else None
 
-        si_idx = next((j for j in range(n)
+        si_idx = next((j for j in range(n) # Pick the “stereotype-inconsistent” index as the other non-unknown non-SC choice
                        if (sc_idx is None or j != sc_idx) and (unk_idx is None or j != unk_idx)), None)
 
-        sc_letter   = (VALID_LETTERS[sc_idx] if sc_idx is not None else None)
+        sc_letter   = (VALID_LETTERS[sc_idx] if sc_idx is not None else None) # Convert numeric indices to A/B/C
         si_letter   = (VALID_LETTERS[si_idx] if si_idx is not None else None)
         gold_letter = gold_letter_from_numeric_label(r, n)
 
-        if gold_letter and (unk_idx is not None) and gold_letter == VALID_LETTERS[unk_idx]:
+        if gold_letter and (unk_idx is not None) and gold_letter == VALID_LETTERS[unk_idx]: # 3-way condition: ambiguous vs disambiguated toward SC vs toward SI
             cc = "AMBIG"
         elif gold_letter and (sc_letter is not None) and gold_letter == sc_letter:
             cc = "DISAMBIG_STEREO"
@@ -173,9 +172,9 @@ def prepare_df_from_hf(dataset_id: str | None,
         else:
             cc = "DISAMBIG"
 
-        golds.append(gold_letter); scs.append(sc_letter); sis.append(si_letter); cc3.append(cc)
+        golds.append(gold_letter); scs.append(sc_letter); sis.append(si_letter); cc3.append(cc) # Accumulate derived fields
 
-    df["gold_label"]          = golds
+    df["gold_label"]          = golds # Attach columns
     df["sc_label"]            = scs
     df["si_label"]            = sis
     df["context_condition_3"] = cc3
@@ -187,7 +186,7 @@ def prepare_df_from_hf(dataset_id: str | None,
 
     return df
 
-def _should_skip_sentence_transformers(name: str) -> bool:
+def _should_skip_sentence_transformers(name: str) -> bool: # Avoid wrapping certain embedding backbones with SentenceTransformer when no ST config exists.
     """
     Heuristic: skip SentenceTransformer wrapper for raw embedding backbones that
     don't have an ST config on the Hub (e.g., google/embeddinggemma-300m).
@@ -207,7 +206,7 @@ class Embedder:
         name_l = self.name.lower()
 
         # device
-        if device == "auto":
+        if device == "auto": # Pick CUDA → MPS → CPU, unless user forced.
             if torch.cuda.is_available():
                 self.device = "cuda"
             elif getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
@@ -218,7 +217,7 @@ class Embedder:
             self.device = device
 
         # dtype
-        if dtype == "auto":
+        if dtype == "auto": # Sensible defaults (bf16 on supporting GPUs, else fp16; CPU uses fp32).
             if self.device == "cuda":
                 self.dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
             else:
@@ -237,7 +236,7 @@ class Embedder:
                 self.st_model = None
                 self.is_sentence_transformer = False
 
-        if not self.is_sentence_transformer:
+        if not self.is_sentence_transformer: # Load tokenizer/model, special left padding for Qwen embeddings, move to device, eval mode. If using ST, no tok/model kept.
             self.tok = AutoTokenizer.from_pretrained(self.name, use_fast=True)
             # Qwen embedding models prefer left padding
             if "qwen3-embedding" in name_l or "qwen/" in name_l:
@@ -259,7 +258,7 @@ class Embedder:
 
 
     @torch.no_grad()
-    def encode(self, texts: List[str], batch_size: int = None, normalize: bool = True) -> np.ndarray:
+    def encode(self, texts: List[str], batch_size: int = None, normalize: bool = True) -> np.ndarray: # ST path: use its encode. HF path: tokenize, forward, mean-pool over tokens with attention mask, stack batches, optional L2 normalize
         bs = batch_size or self.bs
         if self.is_sentence_transformer:
             embs = self.st_model.encode(
@@ -286,11 +285,11 @@ class Embedder:
                 embs = embs / norms
             return embs
 
-def cosine(a: np.ndarray, b: np.ndarray) -> float:
+def cosine(a: np.ndarray, b: np.ndarray) -> float: # Cosine (vectors assumed normalized).
     # a,b are 1D normalized vectors
     return float(np.dot(a, b))
 
-def compute_row_sims(df: pd.DataFrame, emb: Embedder, batch_size: int) -> pd.DataFrame:
+def compute_row_sims(df: pd.DataFrame, emb: Embedder, batch_size: int) -> pd.DataFrame: # Compute per-row cosine(question, context).
     """
     For every row: cosine( emb(question), emb(context) ).
     Returns a copy of df with a new 'sim' column — per **embedding model** run.
