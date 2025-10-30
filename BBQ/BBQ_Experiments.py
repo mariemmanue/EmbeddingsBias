@@ -1083,6 +1083,13 @@ def rq3_stats(r3_df: pd.DataFrame) -> pd.DataFrame:
 def plot_rq1_volatility_boxswarm(r1_df: pd.DataFrame, stats_df: Optional[pd.DataFrame] = None,
                                  title="Ambiguous-case volatility by category",
                                  save_path: str | None = None):
+    # --- Safety guard: skip empty or NaN-only volatility data ---
+    if df is None or df.empty or "volatility_var" not in df.columns:
+        print("[WARN] Skipping RQ1 plot: no volatility data.")
+        return
+    if df["volatility_var"].dropna().empty:
+        print("[WARN] Skipping RQ1 plot: all volatility values are NaN.")
+        return
     if r1_df.empty:
         print("[plot_rq1] empty RQ1 dataframe"); return
     df = r1_df.copy(); df["category"] = df["category"].astype(str)
