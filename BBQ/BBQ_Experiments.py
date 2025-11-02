@@ -1822,50 +1822,36 @@ def load_df_any(path: str) -> pd.DataFrame:
         return pd.read_parquet(path)
     return pd.read_csv(path)
 
-
 def build_parser():
     ap = argparse.ArgumentParser(
-        description=(
-            "BBQ unified runs (embedding + generative). "
-            "Either pass --df-path (CSV/Parquet, premerged) OR "
-            "--dataset-id and --metadata-csv to build from HF + metadata."
-        )
+        description="BBQ unified runs (embedding + generative). "
+                    "Either pass --df-path (CSV/Parquet, premerged) OR "
+                    "--dataset-id and --metadata-csv to build from HF + metadata."
     )
     ap.add_argument("--task", required=True, choices=["embedding", "generative"], help="Which experiment to run.")
     ap.add_argument("--output-dir", required=True, help="Where to write CSV outputs.")
-    ap.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda", "mps"])
-    ap.add_argument("--dtype", default="float16", choices=["float16", "bfloat16", "float32"])
+    ap.add_argument("--device", default="auto", choices=["auto","cpu","cuda","mps"])
+    ap.add_argument("--dtype",  default="float16", choices=["float16","bfloat16","float32"])
     ap.add_argument("--batch-size", type=int, default=64, help="Embedding encode batch size (embedding task only).")
     ap.add_argument("--use-logprobs", action="store_true", help="Generative: score with next-token logprobs.")
 
     # models
-    ap.add_argument(
-        "--embedding-models",
-        nargs="*",
-        default=[
-            "ibm-granite/granite-embedding-small-english-r2",
-            "Qwen/Qwen3-Embedding-4B",
-            "google/embeddinggemma-300m",
-        ],
-    )
+    ap.add_argument("--embedding-models", nargs="*", default=[
+        "ibm-granite/granite-embedding-small-english-r2",
+        "Qwen/Qwen3-Embedding-4B",
+        "google/embeddinggemma-300m",
+    ])
     ap.add_argument("--gen-model", default="mistralai/Mistral-Small-3.2-24B-Instruct-2506")
 
-    # data IO
+    # data IO (choose one path)
     ap.add_argument("--df-path", help="Path to premerged BBQ dataframe (CSV or Parquet).")
     ap.add_argument("--dataset-id", help="HF dataset id for BBQ if building from HF (e.g., heegyu/BBQ).")
     ap.add_argument("--metadata-csv", help="Path to additional_metadata.csv if building from HF.")
     ap.add_argument("--hf-revision", default=None, help="Optional HF revision/commit for dataset.")
-    ap.add_argument("--subset", type=int, default=None, help="Optional row cap for quick smoke tests (after filtering).")
+    ap.add_argument("--subset", type=int, default=None, help="Optional row cap for quick smoke tests (generative).")
 
-    # NEW: per-category slice to avoid GPU overload
-    ap.add_argument(
-        "--category",
-        help="Run ONLY this category (case-insensitive). Example: --category GENDER_IDENTITY",
-    )
-    ap.add_argument(
-        "--categories",
-        help="Run ONLY these categories (comma-separated, case-insensitive). Example: --categories gender_identity,age,disability_status",
-    )
+    # 👉 ADD THIS
+    ap.add_argument("--category", help="Optional: run only on this BBQ category, e.g. AGE, RELIGION, RACE_ETHNICITY")
 
     return ap
 
@@ -1916,6 +1902,16 @@ def main():
             revision=args.hf_revision,
         )
         print(f"[DATA] Prepared merged HF+metadata dataframe with {len(df)} rows.")
+    # --------- Optional category filter ---------
+    if args.category:
+        cat = args.category.strip().upper()
+        if "category" not in df.columns:
+            raise SystemExit("Dataset has no 'category' column to filter on.")
+        before = len(df)
+        df = df[df["category"].astype(str).str.upper() == cat].copy()
+        print(f"[DATA] Filtered to category={cat}: {len(df)}/{before} rows")
+        if df.empty:
+            raise SystemExit(f"No rows found for category {cat}")
 
     # --------- Per-category filter (cluster-friendly) ---------
     df = _filter_by_categories(df, args.category, args.categories)
