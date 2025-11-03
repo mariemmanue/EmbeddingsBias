@@ -17,6 +17,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 sns.set_theme(style="whitegrid", context="talk")
 from matplotlib.ticker import FuncFormatter
+from matplotlib.patches import Patch
 
 from datetime import datetime, timedelta
 import random
@@ -609,6 +610,36 @@ def _norm_polarity(val):
     return None
 
 
+def plot_all_rqs(prefix: str, r1, r2, r3, out_dir: str, safe: str):
+    """Helper: generate all RQ plots for a given prefix (RACE or ARC)."""
+    plot_rq1_volatility_boxswarm(
+        r1,
+        stats_df=rq1_stats(r1),
+        title=f"{prefix}: Ambiguous-case volatility (gen)",
+        save_path=os.path.join(out_dir, f"{safe}__{prefix.lower()}__rq1_volatility_boxswarm_gen.png"),
+    )
+    plot_rq2_forest(
+        r2,
+        title_prefix=f"{prefix}: Disambiguation effect (gen)",
+        save_path=os.path.join(out_dir, f"{safe}__{prefix.lower()}__rq2_forest_gen.png"),
+    )
+    plot_rq2_volcano(
+        r2,
+        title=f"{prefix}: Effect vs significance (gen)",
+        save_path=os.path.join(out_dir, f"{safe}__{prefix.lower()}__rq2_volcano_gen.png"),
+    )
+    plot_rq3_grouped_bars(
+        r3,
+        title=f"{prefix}: Polarity effect by context condition (gen)",
+        save_path=os.path.join(out_dir, f"{safe}__{prefix.lower()}__rq3_grouped_bars_gen.png"),
+    )
+    plot_rq3_forest_per_category(
+        r3,
+        title=f"{prefix}: Polarity effect (per category, gen)",
+        save_path=os.path.join(out_dir, f"{safe}__{prefix.lower()}__rq3_forest_gen.png"),
+    )
+
+
 def run_generative_for_model(
     model_name: str,
     df_ready: pd.DataFrame,
@@ -617,6 +648,7 @@ def run_generative_for_model(
     dtype: str,
     use_logprobs: bool,
 ) -> None:
+    """Unified runner for generative BBQ experiments (RACE + ARC)."""
     rows_df = evaluate_model_generative(
         df=df_ready,
         model_name=model_name,
@@ -627,53 +659,58 @@ def run_generative_for_model(
     )
     safe = model_name.replace("/", "__")
 
-    r1 = rq1_volatility(rows_df, mode="generative", pred_col="pred_race", condition_col="context_condition_3")
-    r2 = rq2_disambig_gain(rows_df, mode="generative", pred_col="pred_race", condition_col="context_condition_3")
-    r3 = rq3_polarity_effect(rows_df, mode="generative", pred_col="pred_race", condition_col="context_condition_3")
-    r1.to_csv(os.path.join(out_dir, f"{safe}__rq1_volatility_gen.csv"), index=False)
-    r2.to_csv(os.path.join(out_dir, f"{safe}__rq2_disambig_gain_gen.csv"), index=False)
-    r3.to_csv(os.path.join(out_dir, f"{safe}__rq3_polarity_effect_gen.csv"), index=False)
+    # ---------------- RQ CALCULATIONS ---------------- #
+    def _rq_suite(pred_col: str, tag: str):
+        r1 = rq1_volatility(rows_df, mode="generative", pred_col=pred_col, condition_col="context_condition_3")
+        r2 = rq2_disambig_gain(rows_df, mode="generative", pred_col=pred_col, condition_col="context_condition_3")
+        r3 = rq3_polarity_effect(rows_df, mode="generative", pred_col=pred_col, condition_col="context_condition_3")
+        r1.to_csv(os.path.join(out_dir, f"{safe}__{tag}__rq1_volatility_gen.csv"), index=False)
+        r2.to_csv(os.path.join(out_dir, f"{safe}__{tag}__rq2_disambig_gain_gen.csv"), index=False)
+        r3.to_csv(os.path.join(out_dir, f"{safe}__{tag}__rq3_polarity_effect_gen.csv"), index=False)
+        return r1, r2, r3
 
-    plot_rq1_volatility_boxswarm(
-        r1,
-        stats_df=rq1_stats(r1),
-        save_path=os.path.join(out_dir, f"{safe}__rq1_volatility_boxswarm_gen.png"),
-    )
-    plot_rq2_forest(
-        r2,
-        title_prefix="Disambiguation effect (gen)",
-        save_path=os.path.join(out_dir, f"{safe}__rq2_forest_gen.png"),
-    )
-    plot_rq2_volcano(
-        r2,
-        title="Effect vs significance (gen)",
-        save_path=os.path.join(out_dir, f"{safe}__rq2_volcano_gen.png"),
-    )
-    plot_rq3_grouped_bars(
-        r3,
-        title="Polarity effect by context condition (gen)",
-        save_path=os.path.join(out_dir, f"{safe}__rq3_grouped_bars_gen.png"),
-    )
-    plot_rq3_forest_per_category(
-        r3,
-        title="Polarity effect (per category, gen)",
-        save_path=os.path.join(out_dir, f"{safe}__rq3_forest_gen.png"),
-    )
+    r1_race, r2_race, r3_race = _rq_suite("pred_race", "race")
+    r1_arc,  r2_arc,  r3_arc  = _rq_suite("pred_arc",  "arc")
 
-    acc_mat, bias_mat = summarize_bbq_bias_and_accuracy(rows_df, pred_col="pred_race", condition_col="context_condition_3")
+    # ---------------- PLOTTING ---------------- #
+    plot_all_rqs("RACE", r1_race, r2_race, r3_race, out_dir, safe)
+    plot_all_rqs("ARC",  r1_arc,  r2_arc,  r3_arc,  out_dir, safe)
+
+    # ---------------- ACCURACY & BIAS ---------------- #
+    acc_race, bias_race = summarize_bbq_bias_and_accuracy(rows_df, pred_col="pred_race", condition_col="context_condition_3")
+    acc_arc,  bias_arc  = summarize_bbq_bias_and_accuracy(rows_df, pred_col="pred_arc",  condition_col="context_condition_3")
+
+    # Race-style heatmap
     plot_bias_and_accuracy_heatmaps(
-        acc_mat,
-        bias_mat,
-        suptitle=safe,
-        save_path=os.path.join(out_dir, f"{safe}__bias_acc_heatmaps.png"),
+        acc_race,
+        bias_race,
+        suptitle=f"{safe} (RACE)",
+        save_path=os.path.join(out_dir, f"{safe}__race__bias_acc_heatmaps.png"),
     )
-    acc_mat.to_csv(os.path.join(out_dir, f"{safe}__acc_matrix.csv"))
-    bias_mat.to_csv(os.path.join(out_dir, f"{safe}__bias_matrix.csv"))
 
+    # ARC-vs-RACE accuracy comparison
+    plot_arc_vs_race_accuracy(
+        acc_race,
+        acc_arc,
+        title=f"{safe}: ARC vs RACE Accuracy Difference",
+        save_path=os.path.join(out_dir, f"{safe}__arc_vs_race_accuracy.png"),
+    )
+
+    # ---------------- RATE OF CHOOSING ---------------- #
+    roc_df = choice_rates_unknown_sc_si(rows_df, pred_col="pred_race", by=["category", "context_condition_3"])
     _ = plot_rate_of_choosing(
-        choice_rates_unknown_sc_si(rows_df, pred_col="pred_race", by=["category", "context_condition_3"]),
+        roc_df,
         save_dir=os.path.join(out_dir, f"{safe}__rate_of_choosing"),
     )
+
+    # ---------------- SAVE MATRICES ---------------- #
+    acc_race.to_csv(os.path.join(out_dir, f"{safe}__race__acc_matrix.csv"))
+    bias_race.to_csv(os.path.join(out_dir, f"{safe}__race__bias_matrix.csv"))
+    acc_arc.to_csv(os.path.join(out_dir, f"{safe}__arc__acc_matrix.csv"))
+    bias_arc.to_csv(os.path.join(out_dir, f"{safe}__arc__bias_matrix.csv"))
+    roc_df.to_csv(os.path.join(out_dir, f"{safe}__rate_of_choosing.csv"), index=False)
+
+    print(f"[DONE] {model_name}: generative analysis and plots complete.")
 
 
 def _model_uses_llama4_processor(model_name: str) -> bool:
@@ -1536,30 +1573,54 @@ def plot_rq2_forest(
     plt.close(fig)
 
 
-def plot_rq2_volcano(
-    r2_df: pd.DataFrame,
-    title="Effect vs significance (stereo – anti)",
-    save_path: str | None = None,
-):
+def plot_rq2_volcano(r2_df: pd.DataFrame,
+                     title: str = "Effect vs significance (stereo – anti)",
+                     save_path: str | None = None):
     if r2_df.empty:
-        print("[plot_rq2_volcano] empty RQ2 dataframe")
-        return
+        print("[plot_rq2_volcano] empty RQ2 dataframe"); return
+
     ddf, _ = _rq2_delta_series(r2_df)
     agg = _ttest_per_category_on_zero(ddf)
     if agg.empty:
         return
+
+    # add column for -log10(p)
     agg["_neglog10p"] = agg["pvalue"].apply(_neglog10)
+
+    # make a color per category
+    cats = list(agg["category"].unique())
+    palette = sns.color_palette("tab20", len(cats))
+    cat2color = {c: palette[i] for i, c in enumerate(cats)}
+
     fig, ax = plt.subplots(figsize=(8, 6), constrained_layout=True)
-    sns.scatterplot(data=agg, x="mean", y="_neglog10p", hue="category", ax=ax, s=80)
+
+    for cat in cats:
+        sub = agg[agg["category"] == cat]
+        ax.scatter(
+            sub["mean"],
+            sub["_neglog10p"],
+            s=80,
+            color=cat2color[cat],
+            label=cat,
+            alpha=0.9,
+        )
+
     ax.axvline(0, ls="--", lw=1, color="#999")
     ax.axhline(-np.log10(0.05), ls=":", lw=1, color="#c55")
-    ax.set_xlabel("Effect size")
+
+    ax.set_xlabel("Effect size (stereo – anti)")
     ax.set_ylabel("-log10(p)")
     ax.set_title(title)
-    ax.get_legend().remove()
-    lab = agg.sort_values("_neglog10p", ascending=False).head(8)
-    for _, r in lab.iterrows():
-        ax.text(r["mean"], r["_neglog10p"], f"  {r['category']}", va="center", fontsize=10)
+
+    # legend outside
+    ax.legend(
+        title="Category",
+        bbox_to_anchor=(1.02, 1),
+        loc="upper left",
+        borderaxespad=0.,
+        frameon=True,
+    )
+
     if save_path:
         plt.savefig(save_path, dpi=200, bbox_inches="tight")
     plt.show()
@@ -1768,6 +1829,39 @@ def plot_mean_similarity_heatmap(
     plt.show()
     plt.close(fig)
 
+def plot_arc_vs_race_accuracy(rows_df: pd.DataFrame, save_path: str | None = None):
+    # per category, per condition, compute accuracy for both preds
+    # Positive values → ARC better; Negative values → RACE better
+    df = rows_df.copy()
+    df["acc_race"] = (df["pred_race"] == df["gold_label"]).astype(float) * 100.0
+    df["acc_arc"]  = (df["pred_arc"]  == df["gold_label"]).astype(float) * 100.0
+
+    agg = (df.groupby(["category", "context_condition_3"])
+             [["acc_race", "acc_arc"]]
+             .mean()
+             .reset_index())
+
+    cats = sorted(agg["category"].unique())
+    conds = ["AMBIG", "DISAMBIG_STEREO", "DISAMBIG_ANTI"]
+
+    for cond in conds:
+        sub = agg[agg["context_condition_3"] == cond]
+        if sub.empty:
+            continue
+        x = np.arange(len(cats))
+        width = 0.35
+        fig, ax = plt.subplots(figsize=(10, 4), constrained_layout=True)
+        ax.bar(x - width/2, sub["acc_race"], width, label="RACE")
+        ax.bar(x + width/2, sub["acc_arc"],  width, label="ARC")
+        ax.set_xticks(x)
+        ax.set_xticklabels(cats, rotation=30, ha="right")
+        ax.set_ylabel("Accuracy (%)")
+        ax.set_title(f"ARC vs RACE accuracy — {cond}")
+        ax.legend()
+        if save_path:
+            base, ext = os.path.splitext(save_path)
+            plt.savefig(f"{base}_{cond}{ext}", dpi=200, bbox_inches="tight")
+        plt.show()
 
 def plot_rate_of_choosing(
     roc_df: pd.DataFrame,
