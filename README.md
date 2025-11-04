@@ -67,7 +67,7 @@ Clone the repository and install dependencies:
 git clone https://github.com/<your-org-or-user>/EmbeddingsBias.git
 cd EmbeddingsBias
 pip install -r requirements.txt
-```bash
+```
 
 ### 2. Generative Experiments
 
@@ -85,7 +85,7 @@ python BBQ/BBQ_Experiments.py \
   --dtype float16 \
   --use-logprobs \
   --gen-model google/gemma-3-1b-it
-```bash
+```
 
 
 
