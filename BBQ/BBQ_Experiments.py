@@ -1701,8 +1701,16 @@ def plot_rq3_grouped_bars(
     ax.set_yticklabels(yticklabels)
     ax.set_xlabel(f"Polarity effect ({metric}; NEG – NONNEG)")
     ax.set_title(title)
+
+    # 👇 move legend to the side
     if len(conds) > 1:
-        ax.legend(title="Condition", frameon=True, loc="lower right")
+        ax.legend(
+            title="Condition",
+            frameon=True,
+            loc="center left",
+            bbox_to_anchor=(1.02, 0.5),
+            borderaxespad=0.0,
+        )
 
     if save_path:
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
@@ -1757,10 +1765,32 @@ def plot_bias_and_accuracy_heatmaps(
     figsize_scale: float = 0.55,
     save_path: str | None = None,
 ):
-    cats = list(acc_mat.index)
-    nrows = max(4, len(cats))
-    fig, axes = plt.subplots(1, 2, figsize=(16, max(4, figsize_scale * nrows)), constrained_layout=True)
+    # sort columns if they exist
+    desired_order = ["AMBIG", "DISAMBIG", "DISAMBIG_STEREO", "DISAMBIG_ANTI"]
+    cols = [c for c in desired_order if c in acc_mat.columns] or list(acc_mat.columns)
+    acc_mat = acc_mat[cols]
+    bias_mat = bias_mat[[c for c in cols if c in bias_mat.columns]]
 
+    n_cats = len(acc_mat.index)
+
+    if n_cats == 1:
+        fig, axes = plt.subplots(
+            1, 2,
+            figsize=(10, 3.6),
+            constrained_layout=True,
+        )
+        annot_kws = {"fontsize": 14}
+        yticklabels = [acc_mat.index[0]]
+    else:
+        fig, axes = plt.subplots(
+            1, 2,
+            figsize=(16, max(4, figsize_scale * n_cats)),
+            constrained_layout=True,
+        )
+        annot_kws = None
+        yticklabels = None
+
+    # ----- Bias -----
     sns.heatmap(
         bias_mat,
         ax=axes[0],
@@ -1771,11 +1801,14 @@ def plot_bias_and_accuracy_heatmaps(
         linewidths=0.5,
         linecolor="white",
         cbar_kws={"shrink": 0.8, "label": "Bias (%)"},
+        annot_kws=annot_kws,
     )
     axes[0].set_title("Bias score (%) by condition", fontsize=14)
-    axes[0].set_ylabel("category")
     axes[0].set_xlabel("context_condition_3")
+    if yticklabels is not None:
+        axes[0].set_yticklabels(yticklabels, rotation=0)
 
+    # ----- Accuracy -----
     sns.heatmap(
         acc_mat,
         ax=axes[1],
@@ -1787,13 +1820,16 @@ def plot_bias_and_accuracy_heatmaps(
         linewidths=0.5,
         linecolor="white",
         cbar_kws={"shrink": 0.8, "label": "Accuracy (%)"},
+        annot_kws=annot_kws,
     )
     axes[1].set_title("Accuracy (%) by condition", fontsize=14)
-    axes[1].set_ylabel("category")
     axes[1].set_xlabel("context_condition_3")
+    if yticklabels is not None:
+        axes[1].set_yticklabels(yticklabels, rotation=0)
 
     if suptitle:
         fig.suptitle(f"{suptitle}  •  {PLOT_VERSION}", fontsize=15)
+
     if save_path:
         plt.savefig(save_path, dpi=200, bbox_inches="tight")
     plt.show()
@@ -2036,59 +2072,14 @@ def main():
             )
 
     elif args.task == "generative":
-        # subset AFTER filtering
-        rows_df = evaluate_model_generative(
-            df=df,
+        run_generative_for_model(
             model_name=args.gen_model,
+            df_ready=df,
             out_dir=args.output_dir,
             device=args.device,
             dtype=args.dtype,
             use_logprobs=args.use_logprobs,
-            subset=args.subset,
         )
-
-        safe = args.gen_model.replace("/", "__")
-        r1 = rq1_volatility(rows_df, mode="generative", pred_col="pred_race", condition_col="context_condition_3")
-        r2 = rq2_disambig_gain(rows_df, mode="generative", pred_col="pred_race", condition_col="context_condition_3")
-        r3 = rq3_polarity_effect(rows_df, mode="generative", pred_col="pred_race", condition_col="context_condition_3")
-
-        r1.to_csv(os.path.join(args.output_dir, f"{safe}__rq1_volatility_gen.csv"), index=False)
-        r2.to_csv(os.path.join(args.output_dir, f"{safe}__rq2_disambig_gain_gen.csv"), index=False)
-        r3.to_csv(os.path.join(args.output_dir, f"{safe}__rq3_polarity_effect_gen.csv"), index=False)
-        print("[WRITE] Generative RQs complete.")
-
-        acc_mat, bias_mat = summarize_bbq_bias_and_accuracy(
-            rows_df,
-            pred_col="pred_race",
-            condition_col="context_condition_3",
-        )
-        plot_bias_and_accuracy_heatmaps(
-            acc_mat,
-            bias_mat,
-            suptitle=args.gen_model.replace("/", " / "),
-            save_path=os.path.join(args.output_dir, f"{safe}__bias_acc_heatmaps.png"),
-        )
-
-        roc = choice_rates_unknown_sc_si(
-            rows_df,
-            pred_col="pred_race",
-            by=["category", "context_condition_3"],
-        )
-        plot_rate_of_choosing(
-            roc,
-            save_dir=os.path.join(args.output_dir, f"{safe}__rate_of_choosing"),
-        )
-
-        acc_mat.to_csv(os.path.join(args.output_dir, f"{safe}__acc_matrix.csv"))
-        bias_mat.to_csv(os.path.join(args.output_dir, f"{safe}__bias_matrix.csv"))
-        roc.to_csv(os.path.join(args.output_dir, f"{safe}__rate_of_choosing.csv"), index=False)
-
-        stats_r1 = rq1_stats(r1)
-        stats_r2 = rq2_stats(r2)
-        stats_r3 = rq3_stats(r3)
-        stats_path = os.path.join(args.output_dir, f"{safe}__rq_stats_gen.csv")
-        pd.concat([stats_r1, stats_r2, stats_r3], ignore_index=True).to_csv(stats_path, index=False)
-        print(f"[WRITE] RQ stats (generative) -> {stats_path}")
 
     else:
         raise SystemExit("args.task must be 'embedding' or 'generative'")
