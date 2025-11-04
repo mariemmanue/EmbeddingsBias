@@ -95,6 +95,7 @@ Embedding experiments measure how identity-bearing text changes semantic represe
 
 Example A — GPU (Qwen 4B embedding):
 
+```bash
 python BBQ/BBQ_Experiments.py \
   --task embedding \
   --dataset-id heegyu/BBQ \
@@ -104,13 +105,15 @@ python BBQ/BBQ_Experiments.py \
   --dtype float16 \
   --batch-size 64 \
   --embedding-models Qwen/Qwen3-Embedding-4B
-  
+  ```
   
  ## Dependencies
 
 Install all required libraries:
 
+```bash
 pip install -r requirements.txt
+```
 
 # Contact 
 For questions or collaboration inquiries, contact Marie Tano (mtano@stanford.edu) or open an issue on this repository.
