@@ -2013,7 +2013,6 @@ def _filter_by_categories(df: pd.DataFrame, cat_arg: Optional[str], cats_arg: Op
     print(f"[FILTER] Requested {sorted(list(target_cats))}, got {len(filtered)} rows (of {len(df)})")
     return filtered
 
-
 def main():
     args = build_parser().parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
@@ -2031,22 +2030,9 @@ def main():
             revision=args.hf_revision,
         )
         print(f"[DATA] Prepared merged HF+metadata dataframe with {len(df)} rows.")
-    # --------- Optional category filter ---------
-    if args.category:
-        cat = args.category.strip().upper()
-        if "category" not in df.columns:
-            raise SystemExit("Dataset has no 'category' column to filter on.")
-        before = len(df)
-        df = df[df["category"].astype(str).str.upper() == cat].copy()
-        print(f"[DATA] Filtered to category={cat}: {len(df)}/{before} rows")
-        if df.empty:
-            raise SystemExit(f"No rows found for category {cat}")
 
-    # --------- Per-category filter (cluster-friendly) ---------
-    cat = getattr(args, "category", None)
-    cats = getattr(args, "categories", None)
-    if cat or cats:
-        df = _filter_by_categories(df, cat, cats)
+    # --------- Optional category filter(s) ---------
+    df = _filter_by_categories(df, getattr(args, "category", None), getattr(args, "categories", None))
     if df.empty:
         print("[EXIT] After category filtering, no rows left. Check your --category/--categories spelling.")
         return
@@ -2080,7 +2066,6 @@ def main():
             dtype=args.dtype,
             use_logprobs=args.use_logprobs,
         )
-
     else:
         raise SystemExit("args.task must be 'embedding' or 'generative'")
 
