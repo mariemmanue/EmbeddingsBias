@@ -6,11 +6,16 @@ This section of the repository documents experiments using the **Bias Benchmark 
 
 ## Research Questions
 
-| Experiment ID | Research Question |
-|----------------|------------------|
-| RQ1 | Do identity cues in natural-language queries shift model representations or retrieval outcomes? |
-| RQ2 | Does surface syntactic variation alter model embeddings or retrieved passages? |
-| RQ3 | Do generative models exhibit bias or divergent reasoning when conditioned on identity cues? |
+1. **RQ1 – Volatility:**  
+   How unstable are representations or predictions across equally ambiguous stereotype contexts?
+
+2. **RQ2 – Disambiguation Gain:**  
+   Does added evidence improve alignment or accuracy asymmetrically for stereotype-consistent vs. inconsistent cases?
+
+3. **RQ3 – Polarity Effect:**  
+   Are negative questions more semantically or behaviorally aligned with stereotypes than their non-negative complements?
+
+
 
 ---
 

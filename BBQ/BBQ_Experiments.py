@@ -1865,17 +1865,22 @@ def plot_mean_similarity_heatmap(
     plt.show()
     plt.close(fig)
 
-def plot_arc_vs_race_accuracy(rows_df: pd.DataFrame, save_path: str | None = None):
+def plot_arc_vs_race_accuracy(
+    rows_df: pd.DataFrame,
+    save_path: str | None = None,
+    title: str | None = None,
+):
     # per category, per condition, compute accuracy for both preds
     # Positive values → ARC better; Negative values → RACE better
     df = rows_df.copy()
     df["acc_race"] = (df["pred_race"] == df["gold_label"]).astype(float) * 100.0
     df["acc_arc"]  = (df["pred_arc"]  == df["gold_label"]).astype(float) * 100.0
 
-    agg = (df.groupby(["category", "context_condition_3"])
-             [["acc_race", "acc_arc"]]
-             .mean()
-             .reset_index())
+    agg = (
+        df.groupby(["category", "context_condition_3"])[["acc_race", "acc_arc"]]
+          .mean()
+          .reset_index()
+    )
 
     cats = sorted(agg["category"].unique())
     conds = ["AMBIG", "DISAMBIG_STEREO", "DISAMBIG_ANTI"]
@@ -1884,6 +1889,7 @@ def plot_arc_vs_race_accuracy(rows_df: pd.DataFrame, save_path: str | None = Non
         sub = agg[agg["context_condition_3"] == cond]
         if sub.empty:
             continue
+
         x = np.arange(len(cats))
         width = 0.35
         fig, ax = plt.subplots(figsize=(10, 4), constrained_layout=True)
@@ -1892,12 +1898,20 @@ def plot_arc_vs_race_accuracy(rows_df: pd.DataFrame, save_path: str | None = Non
         ax.set_xticks(x)
         ax.set_xticklabels(cats, rotation=30, ha="right")
         ax.set_ylabel("Accuracy (%)")
-        ax.set_title(f"ARC vs RACE accuracy — {cond}")
+
+        # if caller passed a title, prepend it; otherwise fall back to default
+        if title is not None:
+            ax.set_title(f"{title} — {cond}")
+        else:
+            ax.set_title(f"ARC vs RACE accuracy — {cond}")
+
         ax.legend()
+
         if save_path:
             base, ext = os.path.splitext(save_path)
             plt.savefig(f"{base}_{cond}{ext}", dpi=200, bbox_inches="tight")
-        plt.show()
+
+        plt.close(fig)
 
 def plot_rate_of_choosing(
     roc_df: pd.DataFrame,
