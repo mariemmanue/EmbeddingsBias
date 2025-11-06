@@ -276,7 +276,7 @@ class Embedder:
                     self.is_sentence_transformer = False
 
             if not self.is_sentence_transformer:
-                self.tok = AutoTokenizer.from_pretrained(self.name, use_fast=True)
+                self.tok = AutoTokenizer.from_pretrained(self.name, trust_remote_code=True, use_fast=True)
                 if "qwen3-embedding" in name_l or "qwen/" in name_l:
                     try:
                         self.tok.padding_side = "left"
@@ -755,13 +755,14 @@ def _load_text_model_and_tool(model_name: str, device: str, torch_dtype):
         model.eval()
         return tool, model, "processor"
 
-    tok = AutoTokenizer.from_pretrained(model_name, use_fast=True)
+    tok = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True, use_fast=True)
     if tok.pad_token_id is None and tok.eos_token_id is not None:
         tok.pad_token_id = tok.eos_token_id
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
-        torch_dtype=torch_dtype if device in ("cuda", "mps") else None,
-        low_cpu_mem_usage=True,
+        torch_dtype=torch.float16,
+        device_map="auto",
+        trust_remote_code=True,
     ).to(device)
     model.eval()
     return tok, model, "tokenizer"
@@ -810,13 +811,14 @@ def evaluate_model_generative(
     else:
         from transformers import AutoTokenizer, AutoModelForCausalLM
 
-        tok = AutoTokenizer.from_pretrained(model_name, use_fast=True)
+        tok = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True, use_fast=True)
         if tok.pad_token_id is None and tok.eos_token_id is not None:
             tok.pad_token_id = tok.eos_token_id
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
-            torch_dtype=torch_dtype if device in ("cuda", "mps") else None,
-            low_cpu_mem_usage=True,
+            torch_dtype=torch.float16,
+            device_map="auto",
+            trust_remote_code=True,
         ).to(device)
         model.eval()
 
