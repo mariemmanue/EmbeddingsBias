@@ -717,23 +717,30 @@ def _model_uses_llama4_processor(model_name: str) -> bool:
     return ("meta-llama" in model_name.lower()) and ("llama-4" in model_name.lower())
 
 
-def _build_inputs_for_prompt(tool, prompt: str, device: str):
-    if hasattr(tool, "apply_chat_template"):
-        messages = [{"role": "user", "content": [{"type": "text", "text": prompt}]}]
-        inputs = tool.apply_chat_template(
-            messages,
-            add_generation_prompt=True,
-            tokenize=True,
-            return_dict=True,
-            return_tensors="pt",
-        )
+def _build_inputs_for_prompt(tok, prompt: str, device):
+    """
+    Build model inputs from a plain string prompt.
+    Handles chatty tokenizers (Mistral, LLaMA, gpt-oss-20b) and plain ones.
+    """
+    # Newer HF chat models want a list of {"role": ..., "content": ...}
+    if hasattr(tok, "apply_chat_template") and tok.chat_template is not None:
+        try:
+            messages = [{"role": "user", "content": prompt}]
+            inputs = tok.apply_chat_template(
+                messages,
+                tokenize=True,
+                add_generation_prompt=True,
+                return_tensors="pt",
+            )
+            return {k: v.to(device) for k, v in inputs.items()}
+        except TypeError:
+            # fall back to plain tokenization if template is weird
+            inputs = tok(prompt, return_tensors="pt")
+            return {k: v.to(device) for k, v in inputs.items()}
     else:
-        inputs = tool(prompt, return_tensors="pt")
+        inputs = tok(prompt, return_tensors="pt")
+        return {k: v.to(device) for k, v in inputs.items()}
 
-    for k, v in list(inputs.items()):
-        if hasattr(v, "to"):
-            inputs[k] = v.to(device)
-    return inputs
 
 
 def _load_text_model_and_tool(model_name: str, device: str, torch_dtype):
