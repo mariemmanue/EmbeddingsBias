@@ -287,6 +287,7 @@ class Embedder:
                     self.name,
                     torch_dtype=self.dtype if self.device != "mps" else None,
                     low_cpu_mem_usage=True,
+                    trust_remote_code=True,
                 )
                 self.model = self.model.to(self.device)
                 self.model.eval()
@@ -716,30 +717,31 @@ def run_generative_for_model(
 def _model_uses_llama4_processor(model_name: str) -> bool:
     return ("meta-llama" in model_name.lower()) and ("llama-4" in model_name.lower())
 
-
-def _build_inputs_for_prompt(tok, prompt: str, device):
+def _build_inputs_for_prompt(tool, prompt: str, device):
     """
     Build model inputs from a plain string prompt.
-    Handles chatty tokenizers (Mistral, LLaMA, gpt-oss-20b) and plain ones.
+    Works for chatty tokenizers (that return either a Tensor or a dict)
+    and for plain causal tokenizers.
     """
-    # Newer HF chat models want a list of {"role": ..., "content": ...}
-    if hasattr(tok, "apply_chat_template") and tok.chat_template is not None:
-        try:
-            messages = [{"role": "user", "content": prompt}]
-            inputs = tok.apply_chat_template(
-                messages,
-                tokenize=True,
-                add_generation_prompt=True,
-                return_tensors="pt",
-            )
-            return {k: v.to(device) for k, v in inputs.items()}
-        except TypeError:
-            # fall back to plain tokenization if template is weird
-            inputs = tok(prompt, return_tensors="pt")
-            return {k: v.to(device) for k, v in inputs.items()}
-    else:
-        inputs = tok(prompt, return_tensors="pt")
+    # if tokenizer has a chat template, try that first
+    if hasattr(tool, "apply_chat_template") and tool.chat_template is not None:
+        messages = [{"role": "user", "content": prompt}]
+        inputs = tool.apply_chat_template(
+            messages,
+            tokenize=True,
+            add_generation_prompt=True,
+            return_tensors="pt",
+        )
+        # some tokenizers return a Tensor, some return a dict
+        if isinstance(inputs, torch.Tensor):
+            inputs = {"input_ids": inputs}
+        # move to device
         return {k: v.to(device) for k, v in inputs.items()}
+    else:
+        # fallback: plain tokenization
+        inputs = tool(prompt, return_tensors="pt")
+        return {k: v.to(device) for k, v in inputs.items()}
+
 
 
 
