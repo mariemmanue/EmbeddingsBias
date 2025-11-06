@@ -540,8 +540,15 @@ def first_letter(text: str) -> Optional[str]:
     return None
 
 
-def score_next_token_logprobs(model, tool, prompt: str, device: str, candidate_letters: List[str]) -> Dict[str, float]:
-    inputs = _build_inputs_for_prompt(tool, prompt, device)
+def score_next_token_logprobs(model, tool, prompt, device, letters):
+    inputs = _build_inputs_for_prompt(tok, prompt, device)
+
+    # make inputs match model dtype
+    model_dtype = next(model.parameters()).dtype
+    for k, v in inputs.items():
+        if v.dtype.is_floating_point:
+            inputs[k] = v.to(dtype=model_dtype)
+
     with torch.no_grad():
         out = model(**inputs)
         next_logits = out.logits[:, -1, :]
@@ -550,7 +557,7 @@ def score_next_token_logprobs(model, tool, prompt: str, device: str, candidate_l
     tok = getattr(tool, "tokenizer", tool)
 
     scores = {}
-    for letter in candidate_letters:
+    for letter in letters:
         variants = [letter, " " + letter, letter + ")", "(" + letter + ")", letter + ".", letter + ":"]
         ids = []
         for v in variants:
