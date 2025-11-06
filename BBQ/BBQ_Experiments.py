@@ -586,32 +586,6 @@ def score_next_token_logprobs(model, tool, prompt, device, letters):
             scores[letter] = float(torch.max(logp[0, ids]))
     return scores
 
-
-def generate_letter(model, tool, prompt: str, device: str, max_new_tokens: int = 2) -> Optional[str]:
-    inputs = _build_inputs_for_prompt(tool, prompt, device)
-    with torch.no_grad():
-        gen = model.generate(
-            **inputs,
-            max_new_tokens=max_new_tokens,
-            do_sample=False,
-            temperature=0.0,
-        )
-    if "input_ids" in inputs and hasattr(inputs["input_ids"], "shape"):
-        cut = inputs["input_ids"].shape[1]
-    else:
-        cut = 0
-
-    tok = getattr(tool, "tokenizer", tool)
-    try:
-        decoded = tok.decode(gen[0][cut:], skip_special_tokens=True)
-    except Exception:
-        try:
-            decoded = tok.batch_decode(gen[:, cut:])[0]
-        except Exception:
-            decoded = ""
-    return first_letter(decoded)
-
-
 def generate_letter(model, tool, prompt: str, device: str, max_new_tokens: int = 2) -> Optional[str]:
     inputs = _build_inputs_for_prompt(tool, prompt, device)
     with torch.no_grad():
@@ -625,7 +599,7 @@ def generate_letter(model, tool, prompt: str, device: str, max_new_tokens: int =
         decoded = tok.decode(gen[0][cut:], skip_special_tokens=True)
     except Exception:
         try:
-            decoded = tool.batch_decode(gen[:, cut:])[0]
+            decoded = tok.batch_decode(gen[:, cut:])[0]
         except Exception:
             decoded = ""
     return first_letter(decoded)
@@ -771,7 +745,7 @@ def _build_inputs_for_prompt(tool, prompt: str, device):
     and for plain causal tokenizers.
     """
     # if tokenizer has a chat template, try that first
-    if hasattr(tool, "apply_chat_template") and tool.chat_template is not None:
+    if hasattr(tool, "apply_chat_template") and getattr(tool, "chat_template", None) is not None:
         messages = [{"role": "user", "content": prompt}]
         inputs = tool.apply_chat_template(
             messages,
@@ -788,35 +762,6 @@ def _build_inputs_for_prompt(tool, prompt: str, device):
         # fallback: plain tokenization
         inputs = tool(prompt, return_tensors="pt")
         return {k: v.to(device) for k, v in inputs.items()}
-
-
-
-
-def _load_text_model_and_tool(model_name: str, device: str, torch_dtype):
-    if _model_uses_llama4_processor(model_name) and _HAS_LLAMA4:
-        tool = AutoProcessor.from_pretrained(model_name)
-        model = Llama4ForConditionalGeneration.from_pretrained(
-            model_name,
-            torch_dtype=torch_dtype if device in ("cuda", "mps") else None,
-            attn_implementation="flex_attention",
-            device_map=None,
-            trust_remote_code=True,
-        ).to(device)
-        model.eval()
-        return tool, model, "processor"
-
-    tok = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True, use_fast=True)
-    if tok.pad_token_id is None and tok.eos_token_id is not None:
-        tok.pad_token_id = tok.eos_token_id
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        torch_dtype=torch.float16,
-        device_map="auto",
-        trust_remote_code=True,
-    ).to(device)
-    model.eval()
-    return tok, model, "tokenizer"
-
 
 def evaluate_model_generative(
     df: pd.DataFrame,
@@ -865,13 +810,28 @@ def evaluate_model_generative(
         tok = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True, use_fast=True)
         if tok.pad_token_id is None and tok.eos_token_id is not None:
             tok.pad_token_id = tok.eos_token_id
-        model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            torch_dtype=torch.float16,
-            device_map="auto",
-            trust_remote_code=True,
-        ).to(device)
+
+        lower_name = model_name.lower()
+
+        # SPECIAL-CASE GPT-OSS: it likes to dequantize to bf16 → load it fully in bf16
+        if "gpt-oss" in lower_name:
+            model = AutoModelForCausalLM.from_pretrained(
+                model_name,
+                torch_dtype=torch.bfloat16,
+                device_map=None,          # load first, then move
+                trust_remote_code=True,
+            ).to(device).to(torch.bfloat16)
+        else:
+            # for normal instruction models, actually honor the user CLI dtype
+            model = AutoModelForCausalLM.from_pretrained(
+                model_name,
+                torch_dtype=torch_dtype if device in ("cuda", "mps") else None,
+                device_map="auto",
+                trust_remote_code=True,
+            ).to(device)
+
         model.eval()
+
 
     os.makedirs(out_dir, exist_ok=True)
 
