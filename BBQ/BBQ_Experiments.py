@@ -541,24 +541,39 @@ def first_letter(text: str) -> Optional[str]:
 
 
 def score_next_token_logprobs(model, tool, prompt, device, letters):
-    inputs = _build_inputs_for_prompt(tok, prompt, device)
+    inputs = _build_inputs_for_prompt(tool, prompt, device)
 
-    # make inputs match model dtype
+    # some tokenizers return a Tensor, not a dict
+    if isinstance(inputs, torch.Tensor):
+        inputs = {"input_ids": inputs}
+
+    # match model dtype (fixes Half vs BF16)
     model_dtype = next(model.parameters()).dtype
     for k, v in inputs.items():
-        if v.dtype.is_floating_point:
-            inputs[k] = v.to(dtype=model_dtype)
+        if isinstance(v, torch.Tensor):
+            if v.dtype.is_floating_point:
+                inputs[k] = v.to(device=device, dtype=model_dtype)
+            else:
+                inputs[k] = v.to(device)
 
     with torch.no_grad():
         out = model(**inputs)
         next_logits = out.logits[:, -1, :]
         logp = torch.log_softmax(next_logits, dim=-1)
 
+    # get actual tokenizer object
     tok = getattr(tool, "tokenizer", tool)
 
     scores = {}
     for letter in letters:
-        variants = [letter, " " + letter, letter + ")", "(" + letter + ")", letter + ".", letter + ":"]
+        variants = [
+            letter,
+            " " + letter,
+            letter + ")",
+            "(" + letter + ")",
+            letter + ".",
+            letter + ":",
+        ]
         ids = []
         for v in variants:
             try:
@@ -570,6 +585,31 @@ def score_next_token_logprobs(model, tool, prompt, device, letters):
         if ids:
             scores[letter] = float(torch.max(logp[0, ids]))
     return scores
+
+
+def generate_letter(model, tool, prompt: str, device: str, max_new_tokens: int = 2) -> Optional[str]:
+    inputs = _build_inputs_for_prompt(tool, prompt, device)
+    with torch.no_grad():
+        gen = model.generate(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            do_sample=False,
+            temperature=0.0,
+        )
+    if "input_ids" in inputs and hasattr(inputs["input_ids"], "shape"):
+        cut = inputs["input_ids"].shape[1]
+    else:
+        cut = 0
+
+    tok = getattr(tool, "tokenizer", tool)
+    try:
+        decoded = tok.decode(gen[0][cut:], skip_special_tokens=True)
+    except Exception:
+        try:
+            decoded = tok.batch_decode(gen[:, cut:])[0]
+        except Exception:
+            decoded = ""
+    return first_letter(decoded)
 
 
 def generate_letter(model, tool, prompt: str, device: str, max_new_tokens: int = 2) -> Optional[str]:
@@ -760,6 +800,7 @@ def _load_text_model_and_tool(model_name: str, device: str, torch_dtype):
             torch_dtype=torch_dtype if device in ("cuda", "mps") else None,
             attn_implementation="flex_attention",
             device_map=None,
+            trust_remote_code=True,
         ).to(device)
         model.eval()
         return tool, model, "processor"
@@ -807,6 +848,7 @@ def evaluate_model_generative(
             model_name,
             torch_dtype=torch_dtype if device in ("cuda", "mps") else None,
             low_cpu_mem_usage=True,
+            trust_remote_code=True,
         ).to(device)
         model.eval()
 
