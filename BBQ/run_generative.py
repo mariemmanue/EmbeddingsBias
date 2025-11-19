@@ -53,7 +53,6 @@ from bbq_core import (
 
 # ----------------- MODEL LOADING -----------------
 
-
 def load_model(
     model_id: str,
     device: str = "auto",
@@ -73,6 +72,20 @@ def load_model(
             device = "mps"
         else:
             device = "cpu"
+
+    # ------------------------------------------------------------------
+    # SPECIAL-CASE: openai/gpt-oss-20b bf16/Half MXFP4 bug
+    # Force CPU + float32 to avoid the mixed-dtype MoE crash.
+    # ------------------------------------------------------------------
+    if model_id == "openai/gpt-oss-20b":
+        print(
+            "[MODEL] Detected openai/gpt-oss-20b → forcing device=cpu, "
+            "dtype=float32 to avoid MXFP4 bf16/Half mismatch."
+        )
+        device = "cpu"
+        requested_dtype = "float32"
+        device_map = None
+    # ------------------------------------------------------------------
 
     # Resolve dtype and device_map
     if device == "cuda":
@@ -128,6 +141,7 @@ def load_model(
         model = model.to(device)
     model.eval()
     return tok, model, device
+
 
 
 # ----------------- PROMPTS & PARSING -----------------
