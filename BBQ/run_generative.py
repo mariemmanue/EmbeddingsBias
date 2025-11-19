@@ -77,7 +77,7 @@ def load_model(
     # SPECIAL-CASE: openai/gpt-oss-20b bf16/Half MXFP4 bug
     # Force CPU + float32 to avoid the mixed-dtype MoE crash.
     # ------------------------------------------------------------------
-    if model_id == "openai/gpt-oss-20b":
+    if "gpt-oss-20b" in model_id:
         print(
             "[MODEL] Detected openai/gpt-oss-20b → forcing device=cpu, "
             "dtype=float32 to avoid MXFP4 bf16/Half mismatch."
@@ -122,7 +122,7 @@ def load_model(
     tok = AutoTokenizer.from_pretrained(model_id, use_fast=True)
     model = AutoModelForCausalLM.from_pretrained(
         model_id,
-        torch_dtype=torch_dtype,
+        dtype=torch_dtype,          # <-- use dtype instead of torch_dtype=
         device_map=device_map,
         trust_remote_code=True,
         low_cpu_mem_usage=True,
