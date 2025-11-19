@@ -52,6 +52,13 @@ from bbq_core import (
 
 
 # ----------------- MODEL LOADING -----------------
+import sys, os
+
+print(f"[DEBUG] __file__ = {__file__}")
+print(f"[DEBUG] sys.executable = {sys.executable}")
+print(f"[DEBUG] CONDA_PREFIX = {os.environ.get('CONDA_PREFIX')}")
+print(f"[DEBUG] torch.cuda.is_available() = {torch.cuda.is_available()}")
+
 
 def load_model(
     model_id: str,
