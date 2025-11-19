@@ -10,6 +10,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import seaborn as sns
 from scipy import stats
+import json 
+from sklearn.decomposition import PCA
 
 sns.set_theme(style="whitegrid", context="talk")
 PLOT_VERSION = "PLOT-v3"
@@ -28,7 +30,9 @@ def _read_parquet_embeddings(base_path, typ):
     df_list = []
     for path in os.listdir(base_path):
         if path.endswith(f"__{typ}.parquet"):
-            df_list.append(pd.read_parquet(os.path.join(base_path, path)))
+            # Only process files ending with the specific type
+            full_path = os.path.join(base_path, path)
+            df_list.append(pd.read_parquet(full_path))
     return pd.concat(df_list, ignore_index=True) if df_list else None
 
 
@@ -286,7 +290,6 @@ def plot_rq2_disambig_gain(rq2_df: pd.DataFrame, title: str, save_path: str):
     plt.close(fig)
 
 
-
 def rq3_polarity_effect(rows: pd.DataFrame, *, mode: str,
                         value_col: str = "sim",
                         pred_col: str = "pred_race",
@@ -521,6 +524,174 @@ def plot_bias_and_accuracy_heatmaps(
         plt.savefig(save_path, dpi=200, bbox_inches="tight")
     plt.close(fig)
 
+def plot_deltas(query_embs, ctx_embs, df, title, save_path):
+    # Reduce dimensions to 2D with PCA
+    pca = PCA(n_components=2)
+    deltas = ctx_embs - query_embs
+    deltas_2d = pca.fit_transform(deltas)
+
+    plt.figure(figsize=(14, 10))
+    
+    categories = df['category'].unique()
+    colors = sns.color_palette('hsv', len(categories))
+    category_to_color = {category: colors[idx] for idx, category in enumerate(categories)}
+    
+    context_conditions = df['context_condition'].unique()
+    markers = ['o', 's', 'D', '^', 'v']
+    context_to_marker = {ctx: markers[idx % len(markers)] for idx, ctx in enumerate(context_conditions)}
+    
+    fig, ax = plt.subplots()
+    
+    for idx, row in df.iterrows():
+        polarity = 0.8 if row['question_polarity'] == 'NEG' else 0.5
+        ax.scatter(deltas_2d[idx, 0], deltas_2d[idx, 1], c=[category_to_color[row['category']]],
+                   label=row['category'] if idx == 0 else "", alpha=polarity,
+                   marker=context_to_marker[row['context_condition']])
+    
+    handles, labels = ax.get_legend_handles_labels()
+    by_label = dict(zip(labels, handles))
+    plt.legend(by_label.values(), by_label.keys(), title="Category")
+
+    shape_handles = [plt.Line2D([0], [0], marker=context_to_marker[ctx], color='w', markersize=10, markerfacecolor='grey') for ctx in context_conditions]
+    plt.legend(shape_handles, context_conditions, title="Context Condition", loc='upper left', bbox_to_anchor=(1.05, 1))
+
+    polarity_handles = [plt.Line2D([0], [0], marker='o', color='w', markersize=10, markerfacecolor='grey', alpha=0.8),
+                        plt.Line2D([0], [0], marker='o', color='w', markersize=10, markerfacecolor='grey', alpha=0.5)]
+    plt.legend(polarity_handles, ['NEG', 'NONNEG'], title="Question Polarity", loc='upper left', bbox_to_anchor=(1.05, 0.8))
+
+    plt.title(title)
+    plt.xlabel("PCA Component 1")
+    plt.ylabel("PCA Component 2")
+    plt.savefig(save_path, bbox_inches='tight')
+    plt.close(fig)
+
+def plot_embeddings(query_embs, ctx_embs, df, title, save_path):
+    # Reduce dimensions to 2D with PCA
+    pca = PCA(n_components=2)
+    combined_embs = np.vstack([query_embs, ctx_embs])
+    combined_embs_2d = pca.fit_transform(combined_embs)
+    
+    query_embs_2d = combined_embs_2d[:query_embs.shape[0], :]
+    ctx_embs_2d = combined_embs_2d[query_embs.shape[0]:, :]
+    
+    # Plot
+    plt.figure(figsize=(14, 10))
+    
+    categories = df['category'].unique()
+    colors = sns.color_palette('hsv', len(categories))
+    category_to_color = {category: colors[idx] for idx, category in enumerate(categories)}
+    
+    context_conditions = df['context_condition'].unique()
+    markers = ['o', 's', 'D', '^', 'v']  # Different shapes for context conditions
+    context_to_marker = {ctx: markers[idx % len(markers)] for idx, ctx in enumerate(context_conditions)}
+    
+    fig, ax = plt.subplots()
+    
+    for idx, row in df.iterrows():
+        polarity = 0.8 if row['question_polarity'] == 'NEG' else 0.5  # Color intensity for question polarity
+        ax.scatter(query_embs_2d[idx, 0], query_embs_2d[idx, 1], c=[category_to_color[row['category']]],
+                   label=row['category'] if idx == 0 else "", alpha=polarity,
+                   marker=context_to_marker[row['context_condition']])
+        ax.scatter(ctx_embs_2d[idx, 0], ctx_embs_2d[idx, 1], c=[category_to_color[row['category']]],
+                   label="", alpha=polarity,
+                   marker=context_to_marker[row['context_condition']])
+
+    handles, labels = ax.get_legend_handles_labels()
+    by_label = dict(zip(labels, handles))
+    plt.legend(by_label.values(), by_label.keys(), title="Category")
+    
+    # Create custom legends for shapes and color intensity
+    shape_handles = [plt.Line2D([0], [0], marker=context_to_marker[ctx], color='w', markersize=10, markerfacecolor='grey') for ctx in context_conditions]
+    plt.legend(shape_handles, context_conditions, title="Context Condition", loc='upper left', bbox_to_anchor=(1.05, 1))
+    
+    polarity_handles = [plt.Line2D([0], [0], marker='o', color='w', markersize=10, markerfacecolor='grey', alpha=0.8),
+                        plt.Line2D([0], [0], marker='o', color='w', markersize=10, markerfacecolor='grey', alpha=0.5)]
+    plt.legend(polarity_handles, ['NEG', 'NONNEG'], title="Question Polarity", loc='upper left', bbox_to_anchor=(1.05, 0.8))
+    
+    plt.title(title)
+    plt.xlabel("PCA Component 1")
+    plt.ylabel("PCA Component 2")
+    plt.savefig(save_path, bbox_inches='tight')
+    plt.close(fig)
+
+def perform_statistical_tests(r1, r2, r3, mode, output_dir):
+    # Example tests
+    result_dict = {}
+
+    # RQ1 Statistical test - ANOVA or t-test
+    categories_r1 = r1['category'].unique()
+    for category in categories_r1:
+        cat_data = r1[r1['category'] == category]
+        if mode == "embedding":
+            f_val, p_val = stats.f_oneway(cat_data['volatility_var'])
+            result_dict[f"rq1_{category}"] = {"f_val": f_val, "p_val": p_val}
+        else:
+            f_val, p_val = stats.f_oneway(cat_data['volatility_var'])
+            result_dict[f"rq1_{category}"] = {"f_val": f_val, "p_val": p_val}
+
+    # RQ2 Statistical test - Paired t-test for 'gain_stereo' and 'gain_anti'
+    t_stat_stereo, p_val_stereo = stats.ttest_rel(r2['gain_stereo'], r2['gain_anti'])
+    result_dict["rq2"] = {"t_stat_stereo": t_stat_stereo, "p_val_stereo": p_val_stereo}
+
+    # RQ3 Statistical test - Paired t-test for 'polarity_effect'
+    t_stat_polarity, p_val_polarity = stats.ttest_rel(r3['polarity_effect'], np.zeros(len(r3['polarity_effect'])))
+    result_dict["rq3"] = {"t_stat_polarity": t_stat_polarity, "p_val_polarity": p_val_polarity}
+
+    # Save the results to a file
+    stats_path = os.path.join(output_dir, "stat_tests_results.json")
+    with open(stats_path, 'w') as f:
+        json.dump(result_dict, f, indent=4)
+    print(f"[STATS] wrote {stats_path}")
+
+    # Print the results
+    print(f"\n[INFO] Statistical Tests Results:")
+    for key, val in result_dict.items():
+        print(f"{key} -> {val}")
+
+def identify_and_save_extreme_contexts(r1, r2, r3, mode, df, output_dir):
+    def get_extremes(df, col):
+        highest = df.loc[df[col].idxmax()]
+        lowest = df.loc[df[col].idxmin()]
+        return highest, lowest
+
+    extremes = {}
+
+    # RQ1 - Volatility
+    high_r1, low_r1 = get_extremes(r1, 'volatility_var')
+    high_r1_context = df[(df['category'] == high_r1['category']) & (df['question_index'] == high_r1['question_index'])]
+    low_r1_context = df[(df['category'] == low_r1['category']) & (df['question_index'] == low_r1['question_index'])]
+    extremes['rq1_high'] = high_r1_context.to_dict(orient='records')
+    extremes['rq1_low'] = low_r1_context.to_dict(orient='records')
+
+    # RQ2 - Disambiguation Gain
+    high_stereo_r2, low_stereo_r2 = get_extremes(r2, 'gain_stereo')
+    high_anti_r2, low_anti_r2 = get_extremes(r2, 'gain_anti')
+    high_r2_context = df[(df['category'] == high_stereo_r2['category']) & (df['question_index'] == high_stereo_r2['question_index'])]
+    low_r2_context = df[(df['category'] == low_stereo_r2['category']) & (df['question_index'] == low_stereo_r2['question_index'])]
+    high_anti_r2_context = df[(df['category'] == high_anti_r2['category']) & (df['question_index'] == high_anti_r2['question_index'])]
+    low_anti_r2_context = df[(df['category'] == low_anti_r2['category']) & (df['question_index'] == low_anti_r2['question_index'])]
+    extremes['rq2_high_stereo'] = high_r2_context.to_dict(orient='records')
+    extremes['rq2_low_stereo'] = low_r2_context.to_dict(orient='records')
+    extremes['rq2_high_anti'] = high_anti_r2_context.to_dict(orient='records')
+    extremes['rq2_low_anti'] = low_anti_r2_context.to_dict(orient='records')
+
+    # RQ3 - Polarity Effect
+    high_r3, low_r3 = get_extremes(r3, 'polarity_effect')
+    high_r3_context = df[(df['category'] == high_r3['category']) & (df['question_index'] == high_r3['question_index'])]
+    low_r3_context = df[(df['category'] == low_r3['category']) & (df['question_index'] == low_r3['question_index'])]
+    extremes['rq3_high'] = high_r3_context.to_dict(orient='records')
+    extremes['rq3_low'] = low_r3_context.to_dict(orient='records')
+
+    # Save extremes to JSON
+    extremes_path = os.path.join(output_dir, "extreme_contexts.json")
+    with open(extremes_path, 'w') as f:
+        json.dump(extremes, f, indent=4)
+    print(f"[EXTREMES] wrote {extremes_path}")
+
+    # Print the results
+    print(f"\n[INFO] Extreme Contexts/Questions:")
+    for key, val in extremes.items():
+        print(f"{key} -> {val}")
 
 # ============================================================
 # CLI
@@ -535,7 +706,6 @@ def build_parser():
     ap.add_argument("--title", default=None)
     return ap
 
-
 def main():
     args = build_parser().parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
@@ -545,19 +715,17 @@ def main():
 
     query_embs = _read_parquet_embeddings(args.embeddings_dir, "q")
     ctx_embs = _read_parquet_embeddings(args.embeddings_dir, "c")
-    
+
     if query_embs is None or ctx_embs is None:
         print("Error: Could not load embeddings.")
         return
 
-    # detect mode
     if "sim" in df.columns:
         mode = "embedding"
     else:
         mode = "generative"
     print(f"[INFO] detected mode={mode}")
 
-    # always compute RQ1–RQ3 and write them
     r1 = rq1_volatility(df, mode=mode)
     r2 = rq2_disambig_gain(df, mode=mode)
     r3 = rq3_polarity_effect(df, mode=mode)
@@ -579,10 +747,21 @@ def main():
         plot_mean_delta_heatmap(delta_mat, title, png_path)
         print(f"[PLOT] wrote {png_path}")
 
-        # Plot RQ outputs for embeddings
         plot_rq1_volatility(r1, title="Volatility Variance by Category", save_path=os.path.join(args.output_dir, "rq1_volatility_var.png"))
         plot_rq2_disambig_gain(r2, title="Disambiguation Gain by Category", save_path=os.path.join(args.output_dir, "rq2_disambig_gain.png"))
         plot_rq3_polarity_effect(r3, title="Polarity Effect by Category", save_path=os.path.join(args.output_dir, "rq3_polarity_effect.png"))
+
+        identify_and_save_extreme_contexts(r1, r2, r3, mode="embedding", df=df, output_dir=args.output_dir)
+
+        emb_title = args.title or "Embedding Scatterplot by Category"
+        emb_png_path = os.path.join(args.output_dir, "embedding_scatterplot.png")
+        plot_embeddings(query_embs, ctx_embs, df, emb_title, emb_png_path)
+        print(f"[PLOT] wrote {emb_png_path}")
+
+        delta_title = args.title or "Deltas Scatterplot by Category"
+        delta_png_path = os.path.join(args.output_dir, "deltas_scatterplot.png")
+        plot_deltas(query_embs, ctx_embs, df, delta_title, delta_png_path)
+        print(f"[PLOT] wrote {delta_png_path}")
 
     else:
         if "pred_race" in df.columns:
@@ -601,24 +780,26 @@ def main():
             print(f"[PLOT] wrote {heat_path}")
 
         if "pred_arc" in df.columns:
-            acc_arc, bias_arc = summarize_bbq_bias_and_accuracy(df, pred_col="pred_arc")
-            acc_path = os.path.join(args.output_dir, f"{base}__acc_bias_arc__acc.csv")
-            bias_path = os.path.join(args.output_dir, f"{base}__acc_bias_arc__bias.csv")
-            acc_arc.to_csv(acc_path)
-            bias_arc.to_csv(bias_path)
-            print(f"[WRITE] {acc_path}")
-            print(f"[WRITE] {bias_path}")
+          acc_arc, bias_arc = summarize_bbq_bias_and_accuracy(df, pred_col="pred_arc")
+          acc_path = os.path.join(args.output_dir, f"{base}__acc_bias_arc__acc.csv")
+          bias_path = os.path.join(args.output_dir, f"{base}__acc_bias_arc__bias.csv")
+          acc_arc.to_csv(acc_path)
+          bias_arc.to_csv(bias_path)
+          print(f"[WRITE] {acc_path}")
+          print(f"[WRITE] {bias_path}")
 
-            heat_path = os.path.join(args.output_dir, f"{base}__arc_heatmaps.png")
-            plot_bias_and_accuracy_heatmaps(acc_arc, bias_arc,
-                                            suptitle=(args.title or base) + " (ARC)",
-                                            save_path=heat_path)
-            print(f"[PLOT] wrote {heat_path}")
+          heat_path = os.path.join(args.output_dir, f"{base}__arc_heatmaps.png")
+          plot_bias_and_accuracy_heatmaps(acc_arc, bias_arc,
+                                          suptitle=(args.title or base) + " (ARC)",
+                                          save_path=heat_path)
+          print(f"[PLOT] wrote {heat_path}")
 
         # Plot RQ outputs for generative
         plot_rq1_volatility(r1, title="Volatility Variance by Category", save_path=os.path.join(args.output_dir, "rq1_volatility_var.png"))
         plot_rq2_disambig_gain(r2, title="Disambiguation Gain by Category", save_path=os.path.join(args.output_dir, "rq2_disambig_gain.png"))
         plot_rq3_polarity_effect(r3, title="Polarity Effect by Category", save_path=os.path.join(args.output_dir, "rq3_polarity_effect.png"))
+
+        identify_and_save_extreme_contexts(r1, r2, r3, mode="generative", df=df, output_dir=args.output_dir)
 
     print("[DONE]")
 

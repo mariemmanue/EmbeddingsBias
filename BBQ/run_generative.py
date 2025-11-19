@@ -30,9 +30,8 @@ def race_prompt_paper(question, choices, context):
     return "\n".join(lines)
 
 
-def arc_prompt_paper(context: str, question: str, choices: List[str]) -> str:
-    first_line = f"{context.strip()}{question}"
-    lines = [first_line]
+def arc_prompt_paper(question: str, choices: List[str]) -> str:
+    lines = [question.strip()]
     for i, ch in enumerate("abc"[: len(choices)]):
         lines.append(f"({ch}) {choices[i]}")
     return "\n".join(lines)
@@ -186,7 +185,7 @@ def evaluate_model_generative_stream(
             si_l = (str(r.get("si_label", "")) or "").strip().upper()[:1] or None
 
             p_race = race_prompt_paper(question, choices, context)
-            p_arc = arc_prompt_paper(context, question, choices)
+            p_arc = arc_prompt_paper(question, choices)
 
             if use_logprobs:
                 scores_arc = score_next_token_logprobs(model, tok, p_arc, device, letters)
