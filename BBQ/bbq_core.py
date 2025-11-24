@@ -86,6 +86,8 @@ def is_unknown_text(s: str) -> bool:
     markers = [
         "unknown",
         "undetermined",
+        "can't", "can not"
+        "determine", "cannot"
         "cannot be determined",
         "can not be determined",
         "can't be determined",
@@ -133,17 +135,14 @@ def gold_letter_from_numeric_label(row: Dict[str, Any], n_choices: int) -> str:
 
 
 def prepare_df_from_hf(
-    # main data preparation function
-    # combines dataset loading and metadata loading, then processes and merges them into a single DataFrame. 
-    # It also generates new columns like 'gold_label', 'sc_label', and 'si_label' based on certain conditions
     dataset_id: str | None,
     metadata_csv_path: str,
     revision: str | None = None,
-    default_unknown_index: int = 2,
 ) -> pd.DataFrame:
     raw = load_bbq_from_hf(dataset_id=dataset_id, revision=revision)
     md = load_metadata(metadata_csv_path)
 
+    # Normalize join keys
     for col in ["category", "example_id", "question_index"]:
         if col not in raw.columns:
             raise KeyError(f"HF dataset missing '{col}'")
@@ -153,74 +152,104 @@ def prepare_df_from_hf(
         else:
             raise KeyError(f"metadata CSV missing '{col}'")
 
+    # Drop duplicate rows in HF data
     raw = raw.drop_duplicates(subset=["category", "question_index", "example_id"])
 
+    # Deduplicate metadata; keep first non-NA target_loc per triple
     dup_md = (
         md.groupby(["category", "question_index", "example_id"])
         .size()
         .reset_index(name="n")
-        .query("n>1")
+        .query("n > 1")
     )
     if not dup_md.empty:
         md = (
             md.sort_values(["category", "question_index", "example_id"])
             .groupby(["category", "question_index", "example_id"], as_index=False)
-            .agg(target_loc=("target_loc", lambda s: s.dropna().iloc[0] if s.dropna().size else pd.NA))
+            .agg(
+                target_loc=(
+                    "target_loc",
+                    lambda s: s.dropna().iloc[0] if s.dropna().size else pd.NA,
+                )
+            )
         )
     else:
         md = md[["category", "question_index", "example_id", "target_loc"]].copy()
 
-    df = raw.merge(md, on=["category", "question_index", "example_id"], how="left", validate="m:1")
+    # Merge HF data with metadata
+    df = raw.merge(
+        md,
+        on=["category", "question_index", "example_id"],
+        how="left",
+        validate="m:1",
+    )
 
-    golds, scs, sis, cc3 = [], [], [], []
+    golds_idx, scs_idx, sis_idx, cc3 = [], [], [], []
+
     for r in df.to_dict(orient="records"):
         choices = choices_from_ans_fields(r)
         n = len(choices)
 
+        # 1) Unknown index: ONLY via text, no hard-coded default
         unk_idx = next((j for j in range(n) if is_unknown_text(choices[j])), None)
-        if unk_idx is None and n == 3 and 0 <= default_unknown_index < 3:
-            unk_idx = default_unknown_index
 
+        # 2) Stereotype-consistent index from metadata
         tl = r.get("target_loc", pd.NA)
         sc_idx = int(tl) if pd.notna(tl) and 0 <= int(tl) < n else None
 
-        si_idx = next(
-            (
-                j
-                for j in range(n)
-                if (sc_idx is None or j != sc_idx) and (unk_idx is None or j != unk_idx)
-            ),
-            None,
-        )
+        # 3) Anti-stereotype index = first index that is not stereo and not unknown
+        si_candidates = [j for j in range(n) if j != sc_idx and j != unk_idx]
+        si_idx = si_candidates[0] if si_candidates else None
 
-        sc_letter = VALID_LETTERS[sc_idx] if sc_idx is not None else None
-        si_letter = VALID_LETTERS[si_idx] if si_idx is not None else None
-        gold_letter = gold_letter_from_numeric_label(r, n)
+        # 4) Gold (correct) index from numeric label
+        lab = r.get("label", None)
+        if lab is None or (isinstance(lab, float) and np.isnan(lab)):
+            gold_idx = None
+        else:
+            gold_idx = int(lab) if 0 <= int(lab) < n else None
 
-        if gold_letter and (unk_idx is not None) and gold_letter == VALID_LETTERS[unk_idx]:
+        # 5) Determine 3-way context condition using indices
+        if gold_idx is not None and unk_idx is not None and gold_idx == unk_idx:
             cc = "AMBIG"
-        elif gold_letter and (sc_letter is not None) and gold_letter == sc_letter:
+        elif gold_idx is not None and sc_idx is not None and gold_idx == sc_idx:
             cc = "DISAMBIG_STEREO"
-        elif gold_letter and (si_letter is not None) and gold_letter == si_letter:
+        elif gold_idx is not None and si_idx is not None and gold_idx == si_idx:
             cc = "DISAMBIG_ANTI"
         else:
             cc = "DISAMBIG"
 
-        golds.append(gold_letter)
-        scs.append(sc_letter)
-        sis.append(si_letter)
+        golds_idx.append(gold_idx)
+        scs_idx.append(sc_idx)
+        sis_idx.append(si_idx)
         cc3.append(cc)
 
-    df["gold_label"] = golds
-    df["sc_label"] = scs
-    df["si_label"] = sis
+    # Optionally keep the index columns for debugging
+    df["gold_idx"] = golds_idx
+    df["sc_idx"] = scs_idx
+    df["si_idx"] = sis_idx
+
+    # Map indices back to letters for compatibility with older code
+    df["gold_label"] = [
+        VALID_LETTERS[i] if i is not None and 0 <= i < len(VALID_LETTERS) else ""
+        for i in golds_idx
+    ]
+    df["sc_label"] = [
+        VALID_LETTERS[i] if i is not None and 0 <= i < len(VALID_LETTERS) else None
+        for i in scs_idx
+    ]
+    df["si_label"] = [
+        VALID_LETTERS[i] if i is not None and 0 <= i < len(VALID_LETTERS) else None
+        for i in sis_idx
+    ]
     df["context_condition_3"] = cc3
 
+    # Normalize some categorical fields
     for col in ["category", "question_polarity"]:
         if col in df.columns:
             df[col] = df[col].astype(str).str.upper()
 
     return df
+
 
 
 # ----------------- EMBEDDER -----------------
