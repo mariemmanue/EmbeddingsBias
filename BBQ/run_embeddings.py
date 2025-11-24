@@ -60,17 +60,36 @@ def build_parser():
     ap.add_argument("--hf-revision", default=None)
     return ap
 
-def _save_embeddings(df, embs, path, format):
+def _save_embeddings(df, embs, path, format, include_metadata=True):
     """
     Save embeddings in the specified format: CSV, Parquet, or NumPy (.npy).
-    Note: df parameter is not used but kept for API consistency.
+    If include_metadata is True and df is provided, saves embeddings with metadata columns.
     """
-    if format == "csv":
-        pd.DataFrame(embs).to_csv(path, index=False)
-    elif format == "parquet":
-        pd.DataFrame(embs).to_parquet(path, index=False)
+    if include_metadata and df is not None and len(df) == len(embs):
+        # Create DataFrame with metadata + embedding columns
+        emb_df = df.copy()
+        # Add embedding columns (named as emb_0, emb_1, ..., emb_d)
+        for dim_idx in range(embs.shape[1]):
+            emb_df[f"emb_{dim_idx}"] = embs[:, dim_idx]
+        
+        if format == "csv":
+            emb_df.to_csv(path, index=False)
+        elif format == "parquet":
+            emb_df.to_parquet(path, index=False)
+        else:
+            # For .npy, save both: metadata as separate file and embeddings
+            np.save(path, embs)
+            # Also save metadata separately for .npy format
+            meta_path = path.replace(".npy", "__metadata.csv")
+            df.to_csv(meta_path, index=False)
     else:
-        np.save(path, embs)
+        # Save raw embeddings without metadata
+        if format == "csv":
+            pd.DataFrame(embs).to_csv(path, index=False)
+        elif format == "parquet":
+            pd.DataFrame(embs).to_parquet(path, index=False)
+        else:
+            np.save(path, embs)
 
 def get_gold_answer_text(row: Dict[str, Any]) -> Optional[str]:
     """
@@ -248,14 +267,16 @@ def run_embeddings_for_model(
             base = os.path.join(out_dir, f"{safe}__chunk_{i:08d}_{i+len(base_chunk)-1}")
             q_path = base + "__q." + emb_format
             c_path = base + "__c." + emb_format
-            _save_embeddings(out_df, q_vecs, q_path, emb_format)
-            _save_embeddings(out_df, c_vecs, c_path, emb_format)
+            # Save question+answer embeddings WITH metadata (idx, answer_idx, answer_letter, etc.)
+            _save_embeddings(out_df, q_vecs, q_path, emb_format, include_metadata=True)
+            # Save context embeddings WITH metadata
+            _save_embeddings(out_df, c_vecs, c_path, emb_format, include_metadata=True)
 
             d_path = None
             if save_deltas:
                 deltas = c_vecs - q_vecs
                 d_path = base + "__d." + emb_format
-                _save_embeddings(out_df, deltas, d_path, emb_format)
+                _save_embeddings(out_df, deltas, d_path, emb_format, include_metadata=True)
 
             # Append an index row so we can reload later
             idx_row = pd.DataFrame([{
