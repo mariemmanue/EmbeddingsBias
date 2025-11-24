@@ -1,7 +1,7 @@
 import os
 import argparse
 import json
-from typing import Optional
+from typing import Optional, Dict, Any
 
 import numpy as np
 import pandas as pd
@@ -9,6 +9,8 @@ from bbq_core import (
     load_df_any,
     prepare_df_from_hf,
     Embedder,
+    choices_from_ans_fields,
+    VALID_LETTERS,
 )
 
 """
@@ -59,13 +61,35 @@ def build_parser():
     return ap
 
 def _save_embeddings(df, embs, path, format):
-    # This function saves embeddings in the specified format: CSV, Parquet, or NumPy (.npy).
+    """
+    Save embeddings in the specified format: CSV, Parquet, or NumPy (.npy).
+    Note: df parameter is not used but kept for API consistency.
+    """
     if format == "csv":
         pd.DataFrame(embs).to_csv(path, index=False)
     elif format == "parquet":
         pd.DataFrame(embs).to_parquet(path, index=False)
     else:
         np.save(path, embs)
+
+def get_gold_answer_text(row: Dict[str, Any]) -> Optional[str]:
+    """
+    Extract the gold answer text from a row based on the gold_label.
+    Returns the text of the answer choice corresponding to the gold_label letter.
+    """
+    gold_label = str(row.get("gold_label", "")).strip().upper()
+    if not gold_label or gold_label not in VALID_LETTERS:
+        return None
+    
+    try:
+        choices = choices_from_ans_fields(row)
+        gold_idx = VALID_LETTERS.index(gold_label)
+        if 0 <= gold_idx < len(choices):
+            return choices[gold_idx].strip()
+    except (ValueError, KeyError, IndexError):
+        pass
+    return None
+
 
 def _filter_by_categories(df: pd.DataFrame, cat_arg: Optional[str], cats_arg: Optional[str]) -> pd.DataFrame:
     if "category" not in df.columns: # If the "category" column is not present in the DataFrame, returns the DataFrame as is.
@@ -85,14 +109,6 @@ def _filter_by_categories(df: pd.DataFrame, cat_arg: Optional[str], cats_arg: Op
     filtered = df[df["_cat_upper"].isin(target_cats)].drop(columns=["_cat_upper"])
     print(f"[FILTER] Requested {sorted(list(target_cats))}, got {len(filtered)} rows (of {len(df)})")
     return filtered
-
-def _save_embeddings(df, embs, path, format):
-    if format == "csv":
-        pd.DataFrame(embs).to_csv(path, index=False)
-    elif format == "parquet":
-        pd.DataFrame(embs).to_parquet(path, index=False)
-    else:  # default to .npy
-        np.save(path, embs)
 
 def run_embeddings_for_model(
     model_name: str,
@@ -139,10 +155,22 @@ def run_embeddings_for_model(
     # Main loop
     for i in range(start_idx, n_total, append_chunk_size):
         chunk_df = df_with_texts.iloc[i : i + append_chunk_size].copy()
-        questions = chunk_df["question"].astype(str).tolist()
         contexts = chunk_df["context"].astype(str).tolist()
+        
+        # Build questions with gold answer concatenated
+        questions_with_answer = []
+        for _, row in chunk_df.iterrows():
+            question = str(row.get("question", "")).strip()
+            gold_answer = get_gold_answer_text(row.to_dict())
+            if gold_answer:
+                # Concatenate question + answer to make it comparable to generative experiments
+                question_with_answer = f"{question} {gold_answer}".strip()
+            else:
+                # Fallback to question only if gold answer not available
+                question_with_answer = question
+            questions_with_answer.append(question_with_answer)
 
-        q_vecs = emb.encode_queries(questions, batch_size=batch_size, normalize=True)
+        q_vecs = emb.encode_queries(questions_with_answer, batch_size=batch_size, normalize=True)
         c_vecs = emb.encode_docs(contexts, batch_size=batch_size, normalize=True)
 
         # Step 1: Calculate the dot products
@@ -158,6 +186,8 @@ def run_embeddings_for_model(
         chunk_df["idx"] = range(i, i + len(chunk_df))
         chunk_df["sim"] = sims
         chunk_df["model_name"] = model_name
+        # Store the question+answer text for reference
+        chunk_df["question_with_answer"] = questions_with_answer
 
         header = not os.path.exists(rows_path) or i == 0
         chunk_df.to_csv(rows_path, mode="a", header=header, index=False)
@@ -204,21 +234,7 @@ def run_embeddings_for_model(
             "c_dim": int(dim_c) if dim_c is not None else None,
             "q_norm_mean": q_norm_sum / n_done,
             "c_norm_mean": c_norm_sum / n_done,
-        }
-        with open(meta_path, "w") as f:
-            json.dump(meta, f, indent=2)
-        print(f"[WRITE] Embedding meta -> {meta_path}")
-
-    print(f"[DONE] {model_name} embedding run.")
-
-    if n_done > 0:
-        meta = {
-            "model_name": model_name,
-            "n_rows": n_done,
-            "q_dim": int(dim_q) if dim_q is not None else None,
-            "c_dim": int(dim_c) if dim_c is not None else None,
-            "q_norm_mean": q_norm_sum / n_done,
-            "c_norm_mean": c_norm_sum / n_done,
+            "note": "Questions are concatenated with gold answer text for comparability with generative experiments",
         }
         with open(meta_path, "w") as f:
             json.dump(meta, f, indent=2)
