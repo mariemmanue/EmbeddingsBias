@@ -86,18 +86,20 @@ def is_unknown_text(s: str) -> bool:
     markers = [
         "unknown",
         "undetermined",
-        "can't", "can not"
-        "determine", "cannot"
+        "can't", "can not",
+        "determine", "cannot",
         "cannot be determined",
         "can not be determined",
         "can't be determined",
         "cannot determine",
         "can not determine",
         "can't determine",
+        "not answerable",
         "not determined",
         "can't tell",
         "cannot tell",
         "not known",
+        "not enough info",
         "insufficient information",
         "not enough information",
         "cannot be known",

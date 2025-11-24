@@ -122,6 +122,24 @@ def run_embeddings_for_model(
     save_deltas: bool = False,
     emb_format: str = "parquet",
 ) -> None:
+    """
+    Run embedding-based BBQ experiments for a single embedding model.
+
+    NEW LOGIC:
+      - For each example, we create one query per answer option:
+            Q+A0, Q+A1, Q+A2
+      - Context is the same for all three.
+      - We compute cosine similarity between each (Q+A_k, context) pair.
+
+    This produces one output row per (example, answer_option), with:
+      * idx            = original example index in the global dataframe
+      * answer_idx     = 0/1/2
+      * answer_letter  = "A"/"B"/"C"
+      * answer_text    = ans0/ans1/ans2 string
+      * question_with_answer = "question" + answer_text
+      * sim            = cosine similarity between Q+A_k and context
+    """
+
     os.makedirs(out_dir, exist_ok=True)
     safe = model_name.replace("/", "__")
     rows_path = os.path.join(out_dir, f"{safe}__rows.csv")
@@ -131,116 +149,160 @@ def run_embeddings_for_model(
     print(f"\n[EMB] Loading embedder: {model_name}")
     emb = Embedder(model_name, device=device, dtype=dtype, batch_size=batch_size)
 
-    # Figure out how many rows already processed
+    # Figure out how many *examples* have already been processed
+    # We keep idx = example index, so resuming still works even if
+    # we now have multiple rows per example.
     start_idx = 0
     if os.path.exists(rows_path):
         try:
             existing = pd.read_csv(rows_path, usecols=["idx"])
             start_idx = existing["idx"].max() + 1
-            print(f"[EMB] Resuming {model_name} from row {start_idx}")
+            print(f"[EMB] Resuming {model_name} from example row {start_idx}")
         except Exception:
             print("[EMB] Existing file not readable; will overwrite.")
             start_idx = 0
 
     n_total = len(df_with_texts)
-    print(f"[EMB] Total rows: {n_total}")
+    print(f"[EMB] Total examples: {n_total}")
 
     # Running stats for meta
-    n_done = 0
+    n_done = 0            # number of (example, answer) pairs processed
     q_norm_sum = 0.0
     c_norm_sum = 0.0
     dim_q = None
     dim_c = None
 
-    # Main loop
+    # Main loop over examples in chunks (by example index)
     for i in range(start_idx, n_total, append_chunk_size):
-        chunk_df = df_with_texts.iloc[i : i + append_chunk_size].copy()
-        contexts = chunk_df["context"].astype(str).tolist()
-        
-        # Build questions with gold answer concatenated
-        questions_with_answer = []
-        for _, row in chunk_df.iterrows():
-            question = str(row.get("question", "")).strip()
-            gold_answer = get_gold_answer_text(row.to_dict())
-            if gold_answer:
-                # Concatenate question + answer to make it comparable to generative experiments
-                question_with_answer = f"{question} {gold_answer}".strip()
-            else:
-                # Fallback to question only if gold answer not available
-                question_with_answer = question
-            questions_with_answer.append(question_with_answer)
+        base_chunk = df_with_texts.iloc[i : i + append_chunk_size].copy()
+        if base_chunk.empty:
+            continue
 
-        q_vecs = emb.encode_queries(questions_with_answer, batch_size=batch_size, normalize=True)
-        c_vecs = emb.encode_docs(contexts, batch_size=batch_size, normalize=True)
+        # Build expanded lists for queries, docs, and metadata
+        query_texts = []      # (Q + answer_option)
+        doc_texts = []        # contexts (repeated)
+        meta_rows = []        # metadata for each (example, answer) pair
 
-        # Step 1: Calculate the dot products
+        for local_row_idx, (_, row) in enumerate(base_chunk.iterrows()):
+            example_idx = i + local_row_idx
+            row_dict = row.to_dict()
+
+            question = str(row_dict.get("question", "")).strip()
+            context = str(row_dict.get("context", "")).strip()
+
+            # Extract answer choices ans0/ans1/ans2
+            choices = choices_from_ans_fields(row_dict)
+            n_choices = len(choices)
+
+            for ans_idx in range(n_choices):
+                ans_text = choices[ans_idx]
+                q_text = f"{question} {ans_text}".strip()
+
+                query_texts.append(q_text)
+                doc_texts.append(context)
+
+                meta_rows.append({
+                    "idx": example_idx,                      # original example index
+                    "answer_idx": ans_idx,                   # 0/1/2
+                    "answer_letter": VALID_LETTERS[ans_idx], # "A"/"B"/"C"
+                    "answer_text": ans_text,
+                    "question_with_answer": q_text,
+                    # keep some key columns from original row for convenience
+                    "category": row_dict.get("category", None),
+                    "example_id": row_dict.get("example_id", None),
+                    "question_index": row_dict.get("question_index", None),
+                    "label": row_dict.get("label", None),
+                    "target_loc": row_dict.get("target_loc", None),
+                    # you can add more columns here if you want
+                })
+
+        if not query_texts:
+            continue
+
+        # Encode queries (Q+A_k) and docs (contexts)
+        q_vecs = emb.encode_queries(query_texts, batch_size=batch_size, normalize=True)
+        c_vecs = emb.encode_docs(doc_texts, batch_size=batch_size, normalize=True)
+
+        # Compute cosine similarity between each query and its corresponding context
         dot_products = (q_vecs * c_vecs).sum(axis=1)
-        # Step 2: Calculate the norms of vectors
         norm_q = np.linalg.norm(q_vecs, axis=1)
         norm_c = np.linalg.norm(c_vecs, axis=1)
-        # Step 3: Calculate cosine similarity
         sims = dot_products / (norm_q * norm_c)
 
-        # Save rows CSV
-        chunk_df = chunk_df.copy()
-        chunk_df["idx"] = range(i, i + len(chunk_df))
-        chunk_df["sim"] = sims
-        chunk_df["model_name"] = model_name
-        # Store the question+answer text for reference
-        chunk_df["question_with_answer"] = questions_with_answer
+        # Build output DataFrame for this chunk (one row per (example, answer))
+        records = []
+        for meta_row, sim_val in zip(meta_rows, sims):
+            rec = meta_row.copy()
+            rec["sim"] = float(sim_val)
+            rec["model_name"] = model_name
+            records.append(rec)
 
+        out_df = pd.DataFrame(records)
+
+        # Append to rows CSV
         header = not os.path.exists(rows_path) or i == 0
-        chunk_df.to_csv(rows_path, mode="a", header=header, index=False)
+        out_df.to_csv(rows_path, mode="a", header=header, index=False)
 
-        # Save vectors
+        # Save vectors if requested
         if save_embs:
-            base = os.path.join(out_dir, f"{safe}__chunk_{i:08d}_{i+len(chunk_df)-1}")
+            base = os.path.join(out_dir, f"{safe}__chunk_{i:08d}_{i+len(base_chunk)-1}")
             q_path = base + "__q." + emb_format
             c_path = base + "__c." + emb_format
-            _save_embeddings(chunk_df, q_vecs, q_path, emb_format)
-            _save_embeddings(chunk_df, c_vecs, c_path, emb_format)
+            _save_embeddings(out_df, q_vecs, q_path, emb_format)
+            _save_embeddings(out_df, c_vecs, c_path, emb_format)
 
             d_path = None
             if save_deltas:
                 deltas = c_vecs - q_vecs
                 d_path = base + "__d." + emb_format
-                _save_embeddings(chunk_df, deltas, d_path, emb_format)
+                _save_embeddings(out_df, deltas, d_path, emb_format)
 
             # Append an index row so we can reload later
             idx_row = pd.DataFrame([{
                 "model_name": model_name,
-                "row_start": i,
-                "row_end": i + len(chunk_df) - 1,
+                "row_start_example": i,
+                "row_end_example": i + len(base_chunk) - 1,
+                "n_pairs": len(out_df),
                 "q_path": q_path,
                 "c_path": c_path,
-                "d_path": d_path if d_path else ""
+                "d_path": d_path if d_path else "",
             }])
             idx_header = not os.path.exists(emb_index_path)
             idx_row.to_csv(emb_index_path, mode="a", header=idx_header, index=False)
 
+        # Update meta stats
         q_norm_sum += float(np.linalg.norm(q_vecs, axis=1).sum())
         c_norm_sum += float(np.linalg.norm(c_vecs, axis=1).sum())
-        n_done += len(chunk_df)
+        n_done += len(out_df)
         dim_q = q_vecs.shape[1]
         dim_c = c_vecs.shape[1]
 
-        print(f"[EMB] {model_name}: wrote rows {i}–{i+len(chunk_df)-1}")
+        print(f"[EMB] {model_name}: wrote {len(out_df)} Q+A pairs "
+              f"for examples {i}–{i+len(base_chunk)-1}")
 
+    # Write meta JSON
     if n_done > 0:
         meta = {
             "model_name": model_name,
-            "n_rows": n_done,
+            "n_pairs": n_done,
             "q_dim": int(dim_q) if dim_q is not None else None,
             "c_dim": int(dim_c) if dim_c is not None else None,
             "q_norm_mean": q_norm_sum / n_done,
             "c_norm_mean": c_norm_sum / n_done,
-            "note": "Questions are concatenated with gold answer text for comparability with generative experiments",
+            "note": (
+                "Each example expanded into one query per answer option: "
+                "question + answer_text vs context."
+            ),
         }
         with open(meta_path, "w") as f:
             json.dump(meta, f, indent=2)
         print(f"[WRITE] Embedding meta -> {meta_path}")
 
     print(f"[DONE] {model_name} embedding run.")
+
+
+
+
 
 def main():
     args = build_parser().parse_args()

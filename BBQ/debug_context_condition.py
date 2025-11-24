@@ -15,6 +15,17 @@ Usage:
     python debug_context_condition.py --df-path path/to/prepared_dataframe.csv
 """
 
+"""nlprun -q jag -p standard -c 2 -r 8G\
+  -n BBQ-cc-debug \
+  -o slurm_logs/%x-%j.out \
+  "cd /nlp/scr/mtano/EmbeddingsBias/BBQ && \
+   . /nlp/scr/mtano/miniconda3/etc/profile.d/conda.sh && \
+   conda activate embbias && \
+   python debug_context_condition.py \
+      --dataset-id heegyu/BBQ \
+      --metadata-csv additional_metadata.csv \
+      --output context_condition_discrepancies.csv" """
+
 import argparse
 import pandas as pd
 from typing import Any
