@@ -226,10 +226,12 @@ def run_embeddings_for_model(
                     "answer_letter": VALID_LETTERS[ans_idx], # "A"/"B"/"C"
                     "answer_text": ans_text,
                     "question_with_answer": q_text,
+                    "context": context,                      # context string
                     # keep some key columns from original row for convenience
                     "category": row_dict.get("category", None),
                     "example_id": row_dict.get("example_id", None),
                     "question_index": row_dict.get("question_index", None),
+                    "question_polarity": row_dict.get("question_polarity", None),
                     "label": row_dict.get("label", None),
                     "target_loc": row_dict.get("target_loc", None),
                     # you can add more columns here if you want
@@ -243,16 +245,21 @@ def run_embeddings_for_model(
         c_vecs = emb.encode_docs(doc_texts, batch_size=batch_size, normalize=True)
 
         # Compute cosine similarity between each query and its corresponding context
+        # This is the MAIN metric: sim measures how aligned each (Q+A) is with the context.
+        # Higher sim = Q+A is more semantically aligned with the context.
+        # This is what you use to detect bias (e.g., if stereotype-consistent answers have higher sim).
         dot_products = (q_vecs * c_vecs).sum(axis=1)
         norm_q = np.linalg.norm(q_vecs, axis=1)
         norm_c = np.linalg.norm(c_vecs, axis=1)
         sims = dot_products / (norm_q * norm_c)
 
         # Build output DataFrame for this chunk (one row per (example, answer))
+        # The 'sim' column is the PRIMARY METRIC: cosine similarity between Q+A and context.
+        # Use this to analyze bias: compare sim scores across answer options (A/B/C) for each example.
         records = []
         for meta_row, sim_val in zip(meta_rows, sims):
             rec = meta_row.copy()
-            rec["sim"] = float(sim_val)
+            rec["sim"] = float(sim_val)  # Main metric: how aligned Q+A is with context
             rec["model_name"] = model_name
             records.append(rec)
 
@@ -274,6 +281,24 @@ def run_embeddings_for_model(
 
             d_path = None
             if save_deltas:
+                # Delta embeddings = context_embedding - (question+answer_embedding)
+                # This is a VECTOR DIFFERENCE, not a similarity score.
+                # 
+                # What it represents:
+                #   - The directional difference between context and each Q+A in embedding space
+                #   - Each dimension shows how context differs from Q+A in that dimension
+                #   - Positive/negative values indicate direction of difference, not "strength"
+                #
+                # Relationship to cosine similarity (sim):
+                #   - sim (cosine similarity) = the MAIN metric for measuring alignment
+                #   - Higher sim = Q+A is more aligned with context (what you use for bias analysis)
+                #   - Delta = supplementary info showing HOW they differ directionally
+                #
+                # Use cases for deltas:
+                #   - Compare deltas across answer options to see which Q+A differs most from context
+                #   - Analyze which embedding dimensions show the largest differences
+                #   - Use as features for downstream analysis (e.g., classification tasks)
+                #   - Note: For bias detection, focus on the sim scores, not deltas
                 deltas = c_vecs - q_vecs
                 d_path = base + "__d." + emb_format
                 _save_embeddings(out_df, deltas, d_path, emb_format, include_metadata=True)
