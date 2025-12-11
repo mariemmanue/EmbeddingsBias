@@ -95,6 +95,7 @@ def is_unknown_text(s: str) -> bool:
         "can not determine",
         "can't determine",
         "not answerable",
+        "answerable",
         "not determined",
         "can't tell",
         "cannot tell",

@@ -14,6 +14,47 @@ from bbq_core import (
 )
 
 """
+# IBM Granite Embedding
+nlprun -q jag -p standard -g 1 -r 64G -c 8  \
+  -n BBQ-emb-granite-small \
+  -o /nlp/scr/mtano/EmbeddingsBias/BBQ/slurm_logs/%x-%j.out \
+  "cd /nlp/scr/mtano/EmbeddingsBias/BBQ && \
+   . /nlp/scr/mtano/miniconda3/etc/profile.d/conda.sh && \
+   conda activate embbias && \
+   export HF_HOME=/nlp/scr/mtano/hf_home && \
+   python run_embeddings.py --output-dir ./output \
+                            --device auto \
+                            --dtype float16 \
+                            --batch-size 64 \
+                            --append-chunk-size 200 \
+                            --dataset-id heegyu/BBQ \
+                            --metadata-csv ./additional_metadata.csv \
+                            --embedding-models ibm-granite/granite-embedding-small-english-r2 \
+                            --save-embs \
+                            --save-deltas \
+                            --emb-format parquet"
+
+# Qwen3 Embedding 4B
+nlprun -q jag -p standard -g 1 -r 64G -c 8  \
+  -n BBQ-emb-qwen3-4b \
+  -o /nlp/scr/mtano/EmbeddingsBias/BBQ/slurm_logs/%x-%j.out \
+  "cd /nlp/scr/mtano/EmbeddingsBias/BBQ && \
+   . /nlp/scr/mtano/miniconda3/etc/profile.d/conda.sh && \
+   conda activate embbias && \
+   export HF_HOME=/nlp/scr/mtano/hf_home && \
+   python run_embeddings.py --output-dir ./output \
+                            --device auto \
+                            --dtype float16 \
+                            --batch-size 64 \
+                            --append-chunk-size 200 \
+                            --dataset-id heegyu/BBQ \
+                            --metadata-csv ./additional_metadata.csv \
+                            --embedding-models Qwen/Qwen3-Embedding-4B \
+                            --save-embs \
+                            --save-deltas \
+                            --emb-format parquet"
+
+# Google EmbeddingGemma 300M
 nlprun -q jag -p standard -g 1 -r 64G -c 8  \
   -n BBQ-emb-gemma300m \
   -o /nlp/scr/mtano/EmbeddingsBias/BBQ/slurm_logs/%x-%j.out \
