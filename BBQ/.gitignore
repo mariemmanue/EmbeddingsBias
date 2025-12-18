@@ -1,0 +1,21 @@
+
+# --- BBQ artifacts ---
+BBQ/output/
+BBQ/embed/
+BBQ/gen models/
+BBQ/*.csv
+BBQ/**/*.csv
+BBQ/**/*.parquet
+BBQ/**/*.npy
+BBQ/**/*.pt
+BBQ/**/*.ckpt
+
+# notebooks / temp
+BBQ/**/*.ipynb
+.ipynb_checkpoints/
+
+# caches
+__pycache__/
+.cache/
+wandb/
+.DS_Store
