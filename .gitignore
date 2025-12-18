@@ -30,3 +30,19 @@ BBQ/out_gen/sshleifer__tiny-gpt2__rate_of_choosing/rate_of_choosing__DISAMBIG_ST
 BBQ/out_gen/sshleifer__tiny-gpt2__rate_of_choosing/rate_of_choosing__DISAMBIG.png
 BBQ/CODE_EXPLANATION.md
 BBQ/CONTEXT_CONDITION_REVIEW.md
+
+# --- BBQ artifacts ---
+BBQ/output/
+BBQ/embed/
+BBQ/gen models/
+BBQ/*.csv
+BBQ/**/*.csv
+BBQ/**/*.parquet
+BBQ/**/*.npy
+BBQ/**/*.pt
+BBQ/**/*.ckpt
+BBQ/**/*.ipynb
+
+# keep metadata tracked
+!BBQ/additional_metadata.csv
+
