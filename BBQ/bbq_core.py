@@ -4,6 +4,7 @@
 import os
 import math
 import json
+import re
 import textwrap
 import random
 from datetime import datetime, timedelta
@@ -78,49 +79,17 @@ def load_metadata(metadata_csv_path: str) -> pd.DataFrame:
     return md
 
 
-def is_unknown_text(s: str) -> bool:
-    # Function to check if a string indicates unknown information
-    if not isinstance(s, str):
-        return False
-    t = s.strip().lower()
-    markers = [
-        "unknown",
-        "undetermined",
-        "can't", "can not",
-        "determine", "cannot",
-        "cannot be determined",
-        "can not be determined",
-        "can't be determined",
-        "cannot determine",
-        "can not determine",
-        "can't determine",
-        "not answerable",
-        "answerable",
-        "not determined",
-        "can't tell",
-        "cannot tell",
-        "not known",
-        "not enough info",
-        "insufficient information",
-        "not enough information",
-        "cannot be known",
-        "cannot know",
-        "indeterminate",
-        "undecidable",
-        "unanswerable",
-    ]
-    return any(m in t for m in markers)
-
-
 def choices_from_ans_fields(row: Dict[str, Any]) -> List[str]:
-#This function extracts answer fields from a dictionary row and returns them as a list of strings.
     out = []
     for k in ["ans0", "ans1", "ans2"]:
-        if k in row and isinstance(row[k], str) and row[k].strip():
-            out.append(row[k].strip())
+        if k in row and row[k] is not None:
+            s = str(row[k]).strip()
+            if s and s.lower() != "nan":
+                out.append(s)
     if len(out) < 2:
         raise ValueError("Expected at least ans0 and ans1.")
     return out
+
 
 
 def gold_letter_from_numeric_label(row: Dict[str, Any], n_choices: int) -> str:
@@ -136,6 +105,267 @@ def gold_letter_from_numeric_label(row: Dict[str, Any], n_choices: int) -> str:
     except Exception:
         return str(lab).strip().upper()[:1]
 
+_UNKNOWN_PAT = re.compile(
+    r"(can't be determined|cannot be determined|undetermined|not determined|not answerable|cannot answer|"
+    r"not enough (?:info|information)|insufficient (?:info|information)|unknown|"
+    r"can't tell|cannot tell|not sure|not known|unclear|impossible|not possible)",
+    re.I
+)
+
+
+def _is_unknown_choice(s: str) -> bool:
+    s = (s or "").strip()
+    if not s:
+        return True
+    return bool(_UNKNOWN_PAT.search(s))
+
+def _norm(s: str) -> str:
+    s = (s or "").strip().lower()
+    # collapse whitespace + strip punctuation-ish edges
+    s = re.sub(r"\s+", " ", s)
+    s = s.strip(" \t\n\r\"'.,;:!?()[]{}")
+    return s
+
+_DET_PREFIX = r"(?:the|a|an|my|your|his|her|their|our|this|that|these|those)"
+_PREFIX_RE = re.compile(rf"^(?:{_DET_PREFIX})\s+", flags=re.I)
+
+def _strip_det(s: str) -> str:
+    s = "" if s is None else str(s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return _PREFIX_RE.sub("", s).strip()
+
+
+def _anchor_tokens(ent: str) -> list[str]:
+    """
+    Last-resort tokens to look for in the context.
+    Prefer proper-name anchors (TitleCase tokens).
+    Else fall back to a few content-ish tokens.
+    """
+    ent = "" if ent is None else str(ent)
+
+    # include digits + hyphens (e.g., "84-year-old")
+    toks = re.findall(r"[A-Za-z0-9][A-Za-z0-9\-']+", ent)
+
+    proper = [t for t in toks if t[0].isupper() and t.lower() not in {"the", "a", "an"}]
+    if proper:
+        return proper[:2]  # usually enough (first/last)
+
+    stop = {
+        "the","a","an","one","person","man","woman","guy","girl","boy","kid","individual",
+        "from","with","who","whos","who's","is","was","are","were","on","in","of","to"
+    }
+    content = [t for t in toks if t.lower() not in stop and len(t) >= 3]
+    return content[:3]
+
+def _to_intish(x):
+    if x is None:
+        return None
+    if isinstance(x, (int, np.integer)):
+        return int(x)
+    if isinstance(x, float):
+        if np.isnan(x):
+            return None
+        # only accept near-integers
+        if float(x).is_integer():
+            return int(x)
+        return None
+    if isinstance(x, str):
+        xs = x.strip()
+        xs = re.sub(r"\.0$", "", xs)  # "1.0" -> "1"
+        if xs.isdigit():
+            return int(xs)
+    return None
+
+
+
+def _first_match_pos(context: str, entity_text: str) -> int:
+    """Return char start of (rough) entity mention in context, else -1."""
+    if context is None or entity_text is None:
+        return -1
+
+    ctx = re.sub(r"\s+", " ", str(context)).strip()
+    ent = re.sub(r"\s+", " ", str(entity_text)).strip()
+
+    # normalize curly apostrophes
+    ctx = ctx.replace("’", "'")
+    ent = ent.replace("’", "'")
+
+    if not ctx or not ent:
+        return -1
+
+    # 1) exact (case-insensitive)
+    m = re.search(re.escape(ent), ctx, flags=re.I)
+    if m:
+        return m.start()
+
+    # 2) if answer has comma, try head before comma (e.g., "Ayanna Dorsey, who's ...")
+    if "," in ent:
+        head = ent.split(",", 1)[0].strip()
+        if head:
+            m = re.search(rf"\b{re.escape(head)}\b", ctx, flags=re.I)
+            if m:
+                return m.start()
+
+    # 3) normalize who's -> who is, and optionally drop "who is/was"
+    ent_norm = ent.replace("who's", "who is")
+    ent_norm = re.sub(r"\bwho\s+(is|was)\b", "", ent_norm, flags=re.I).strip()
+    if ent_norm and ent_norm != ent:
+        m = re.search(re.escape(ent_norm), ctx, flags=re.I)
+        if m:
+            return m.start()
+
+    # 4) handle "The Muslim one" / "The gay one" etc.
+    m_one = re.match(r"^(the\s+)?(.+?)\s+one$", ent, flags=re.I)
+    if m_one:
+        core = m_one.group(2).strip()
+        pat = rf"\b{re.escape(core)}\b(?:\s+(?:one|man|woman|person|guy|girl|boy|kid|individual))?\b"
+        m = re.search(pat, ctx, flags=re.I)
+        if m:
+            return m.start()
+
+    # 5) determiner-strip logic
+    ent2 = _strip_det(ent)
+    if ent2 and ent2 != ent:
+        pat = rf"\b(?:{_DET_PREFIX}\s+)?{re.escape(ent2)}\b"
+        m2 = re.search(pat, ctx, flags=re.I)
+        if m2:
+            return m2.start()
+
+        m3 = re.search(re.escape(ent2), ctx, flags=re.I)
+        if m3:
+            return m3.start()
+
+    # 6) fallback: anchor token search (inside _first_match_pos)
+    anchors = _anchor_tokens(ent)
+    for a in anchors:
+        for cand in {a, re.sub(r"('s|’s)$", "", a)}:
+            if not cand:
+                continue
+            m4 = re.search(rf"\b{re.escape(cand)}\b", ctx, flags=re.I)
+            if m4:
+                return m4.start()
+
+
+    return -1
+
+
+
+def add_target_position(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Adds:
+      - target_entity_text: the entity string corresponding to target_loc
+      - other_entity_text: the non-target entity string (of the two entities)
+      - target_char_start / other_char_start: first-match char index in context (debug)
+      - target_position: {"first","second","unknown"}
+
+    Assumptions:
+      - Two "entity" answer options + one unknown option (order varies; we detect unknown by text)
+      - target_loc is usually 0/1 (index into the two entity options) OR
+        sometimes a letter ("A"/"B"/"C") OR
+        sometimes an int index into ans0/ans1/ans2.
+    """
+    out = df.copy()
+
+    # Ensure ans fields exist as strings
+    for c in ["ans0", "ans1", "ans2"]:
+        if c in out.columns:
+            out[c] = out[c].astype(str)
+        else:
+            out[c] = ""
+
+
+    def _row_target_other(row) -> tuple[str, str]:
+        context = row.get("context", "")
+
+        # raw choices
+        choices = [row.get("ans0", ""), row.get("ans1", ""), row.get("ans2", "")]
+        choices = [
+            c for c in choices
+            if (c is not None and str(c).strip() and str(c).strip().lower() != "nan")
+        ]
+
+        # 1) remove unknown option(s)
+        non_unknown = [c for c in choices if not _is_unknown_choice(c)]
+
+        # 2) prefer entity choices that appear in context (if possible)
+        hits = [(c, _first_match_pos(context, c)) for c in non_unknown]
+        hits_in_ctx = [c for (c, pos) in hits if pos >= 0]
+
+        if len(hits_in_ctx) >= 2:
+            entity_choices = hits_in_ctx[:2]
+        elif len(non_unknown) >= 2:
+            entity_choices = non_unknown[:2]
+        else:
+            entity_choices = choices[:2]  # last resort
+
+        target_loc = row.get("target_loc", None)
+        target_text = ""
+
+        # resolve target_text
+        t = _to_intish(target_loc)
+        if t is not None:
+            # common: 0/1 means index among the TWO entities
+            if t in (0, 1) and len(entity_choices) >= 2:
+                target_text = entity_choices[t]
+            # else: maybe it indexes ans0/ans1/ans2 directly
+            elif 0 <= t < len(choices):
+                target_text = choices[t]
+        elif isinstance(target_loc, str) and target_loc.strip().upper() in ("A", "B", "C"):
+            idx = {"A": 0, "B": 1, "C": 2}[target_loc.strip().upper()]
+            if 0 <= idx < len(choices):
+                target_text = choices[idx]
+        elif isinstance(target_loc, str) and target_loc.strip():
+            tl = _norm(target_loc)
+            for c in entity_choices:
+                if _norm(c) == tl:
+                    target_text = c
+                    break
+            if not target_text:
+                target_text = target_loc
+
+        if _is_unknown_choice(target_text):
+            target_text = ""
+
+        # resolve other_text (must be the OTHER of the two entities)
+        other_text = ""
+        if len(entity_choices) >= 2 and target_text:
+            tnorm = _norm(target_text)
+            others = [c for c in entity_choices if _norm(c) != tnorm]
+            other_text = others[0] if others else (entity_choices[1] if _norm(entity_choices[0]) == tnorm else entity_choices[0])
+        else:
+            other_text = entity_choices[1] if len(entity_choices) > 1 else ""
+
+        return str(target_text), str(other_text)
+
+
+
+ 
+    target_texts, other_texts, t_pos, o_pos, t_order = [], [], [], [], []
+
+    for _, row in out.iterrows():
+        context = row.get("context", "")
+        target_text, other_text = _row_target_other(row)
+
+        tp = _first_match_pos(context, target_text)
+        op = _first_match_pos(context, other_text)
+
+        if tp >= 0 and op >= 0:
+            order = "first" if tp < op else "second"
+        else:
+            order = "unknown"
+
+        target_texts.append(target_text)
+        other_texts.append(other_text)
+        t_pos.append(tp)
+        o_pos.append(op)
+        t_order.append(order)
+
+    out["target_entity_text"] = target_texts
+    out["other_entity_text"] = other_texts
+    out["target_char_start"] = t_pos
+    out["other_char_start"] = o_pos
+    out["target_position"] = t_order
+    return out
 
 def prepare_df_from_hf(
     dataset_id: str | None,
@@ -194,7 +424,7 @@ def prepare_df_from_hf(
         n = len(choices)
 
         # 1) Unknown index: ONLY via text, no hard-coded default
-        unk_idx = next((j for j in range(n) if is_unknown_text(choices[j])), None)
+        unk_idx = next((j for j in range(n) if _is_unknown_choice(choices[j])), None)
 
         # 2) Stereotype-consistent index from metadata
         tl = r.get("target_loc", pd.NA)

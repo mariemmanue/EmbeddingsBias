@@ -1,7 +1,7 @@
 import os
 import argparse
 import json
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List, Tuple
 
 import numpy as np
 import pandas as pd
@@ -13,68 +13,9 @@ from bbq_core import (
     VALID_LETTERS,
 )
 
-"""
-# IBM Granite Embedding
-nlprun -q jag -p standard -g 1 -r 64G -c 8  \
-  -n BBQ-emb-granite-small \
-  -o /nlp/scr/mtano/EmbeddingsBias/BBQ/slurm_logs/%x-%j.out \
-  "cd /nlp/scr/mtano/EmbeddingsBias/BBQ && \
-   . /nlp/scr/mtano/miniconda3/etc/profile.d/conda.sh && \
-   conda activate embbias && \
-   export HF_HOME=/nlp/scr/mtano/hf_home && \
-   python run_embeddings.py --output-dir ./output \
-                            --device auto \
-                            --dtype float16 \
-                            --batch-size 64 \
-                            --append-chunk-size 200 \
-                            --dataset-id heegyu/BBQ \
-                            --metadata-csv ./additional_metadata.csv \
-                            --embedding-models ibm-granite/granite-embedding-small-english-r2 \
-                            --save-embs \
-                            --save-deltas \
-                            --emb-format parquet"
+# ----------------------------- CLI -----------------------------
 
-# Qwen3 Embedding 4B
-nlprun -q jag -p standard -g 1 -r 64G -c 8  \
-  -n BBQ-emb-qwen3-4b \
-  -o /nlp/scr/mtano/EmbeddingsBias/BBQ/slurm_logs/%x-%j.out \
-  "cd /nlp/scr/mtano/EmbeddingsBias/BBQ && \
-   . /nlp/scr/mtano/miniconda3/etc/profile.d/conda.sh && \
-   conda activate embbias && \
-   export HF_HOME=/nlp/scr/mtano/hf_home && \
-   python run_embeddings.py --output-dir ./output \
-                            --device auto \
-                            --dtype float16 \
-                            --batch-size 64 \
-                            --append-chunk-size 200 \
-                            --dataset-id heegyu/BBQ \
-                            --metadata-csv ./additional_metadata.csv \
-                            --embedding-models Qwen/Qwen3-Embedding-4B \
-                            --save-embs \
-                            --save-deltas \
-                            --emb-format parquet"
-
-# Google EmbeddingGemma 300M
-nlprun -q jag -p standard -g 1 -r 64G -c 8  \
-  -n BBQ-emb-gemma300m \
-  -o /nlp/scr/mtano/EmbeddingsBias/BBQ/slurm_logs/%x-%j.out \
-  "cd /nlp/scr/mtano/EmbeddingsBias/BBQ && \
-   . /nlp/scr/mtano/miniconda3/etc/profile.d/conda.sh && \
-   conda activate embbias && \
-   export HF_HOME=/nlp/scr/mtano/hf_home && \
-   python run_embeddings.py --output-dir ./output \
-                            --device auto \
-                            --dtype float16 \
-                            --batch-size 64 \
-                            --append-chunk-size 200 \
-                            --dataset-id heegyu/BBQ \
-                            --metadata-csv ./additional_metadata.csv \
-                            --embedding-models google/embeddinggemma-300m \
-                            --save-embs \
-                            --save-deltas \
-                            --emb-format parquet"
-
-"""
+EXP_TYPES = ["qa_vs_context", "question_vs_context", "answer_vs_question"]
 
 def build_parser():
     ap = argparse.ArgumentParser(
@@ -84,7 +25,20 @@ def build_parser():
     ap.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda", "mps"])
     ap.add_argument("--dtype", default="float16", choices=["float16", "bfloat16", "float32"])
     ap.add_argument("--batch-size", type=int, default=64)
-    ap.add_argument("--append-chunk-size", type=int, default=200, help="Write to CSV every N rows.")
+    ap.add_argument("--append-chunk-size", type=int, default=200, help="Write to CSV every N *examples*.")
+
+    ap.add_argument(
+        "--exp-type",
+        default="qa_vs_context",
+        choices=EXP_TYPES,
+        help=(
+            "Which text-pairing to run: "
+            "qa_vs_context=(Q+A) vs Context; "
+            "question_vs_context=Question vs Context; "
+            "answer_vs_question=Answer option vs Question."
+        ),
+    )
+
     ap.add_argument("--category", help="Single category to filter to.")
     ap.add_argument("--categories", help="Comma-separated list of categories.")
     ap.add_argument("--embedding-models", nargs="*", default=[
@@ -92,39 +46,38 @@ def build_parser():
         "Qwen/Qwen3-Embedding-4B",
         "google/embeddinggemma-300m",
     ])
-    ap.add_argument("--save-embs", action="store_true", help="Persist normalized question/context vectors to disk per chunk.")
-    ap.add_argument("--save-deltas", action="store_true", help="Also save delta vectors (context - question) per chunk.")
+
+    ap.add_argument("--save-embs", action="store_true", help="Persist normalized query/doc vectors to disk per chunk.")
+    ap.add_argument("--save-deltas", action="store_true", help="Also save delta vectors (doc - query) per chunk.")
     ap.add_argument("--emb-format", default="parquet", choices=["npy", "csv", "parquet"], help="Format for saved embeddings.")
+
     ap.add_argument("--df-path", help="Path to premerged BBQ dataframe.")
     ap.add_argument("--dataset-id", help="HF dataset id for BBQ.")
     ap.add_argument("--metadata-csv", help="Path to additional_metadata.csv")
     ap.add_argument("--hf-revision", default=None)
     return ap
 
+# ----------------------------- UTIL -----------------------------
+
 def _save_embeddings(df, embs, path, format, include_metadata=True):
     """
-    Save embeddings in the specified format: CSV, Parquet, or NumPy (.npy).
+    Save embeddings in CSV, Parquet, or NumPy (.npy).
     If include_metadata is True and df is provided, saves embeddings with metadata columns.
     """
     if include_metadata and df is not None and len(df) == len(embs):
-        # Create DataFrame with metadata + embedding columns
         emb_df = df.copy()
-        # Add embedding columns (named as emb_0, emb_1, ..., emb_d)
         for dim_idx in range(embs.shape[1]):
             emb_df[f"emb_{dim_idx}"] = embs[:, dim_idx]
-        
+
         if format == "csv":
             emb_df.to_csv(path, index=False)
         elif format == "parquet":
             emb_df.to_parquet(path, index=False)
         else:
-            # For .npy, save both: metadata as separate file and embeddings
             np.save(path, embs)
-            # Also save metadata separately for .npy format
             meta_path = path.replace(".npy", "__metadata.csv")
             df.to_csv(meta_path, index=False)
     else:
-        # Save raw embeddings without metadata
         if format == "csv":
             pd.DataFrame(embs).to_csv(path, index=False)
         elif format == "parquet":
@@ -132,43 +85,116 @@ def _save_embeddings(df, embs, path, format, include_metadata=True):
         else:
             np.save(path, embs)
 
-def get_gold_answer_text(row: Dict[str, Any]) -> Optional[str]:
-    """
-    Extract the gold answer text from a row based on the gold_label.
-    Returns the text of the answer choice corresponding to the gold_label letter.
-    """
-    gold_label = str(row.get("gold_label", "")).strip().upper()
-    if not gold_label or gold_label not in VALID_LETTERS:
-        return None
-    
-    try:
-        choices = choices_from_ans_fields(row)
-        gold_idx = VALID_LETTERS.index(gold_label)
-        if 0 <= gold_idx < len(choices):
-            return choices[gold_idx].strip()
-    except (ValueError, KeyError, IndexError):
-        pass
-    return None
-
-
 def _filter_by_categories(df: pd.DataFrame, cat_arg: Optional[str], cats_arg: Optional[str]) -> pd.DataFrame:
-    if "category" not in df.columns: # If the "category" column is not present in the DataFrame, returns the DataFrame as is.
+    if "category" not in df.columns:
         return df
-    if not cat_arg and not cats_arg: # If neither cat_arg nor cats_arg is provided, returns the DataFrame as is.
+    if not cat_arg and not cats_arg:
         return df
+
     df = df.copy()
     df["category"] = df["category"].astype(str)
-    df["_cat_upper"] = df["category"].str.upper() # Converts the "category" column to uppercase for consistent comparison.
+    df["_cat_upper"] = df["category"].str.upper()
+
     target_cats = set()
-    if cat_arg: # cat_arg: A single category to filter by (if provided).
+    if cat_arg:
         target_cats.add(cat_arg.strip().upper())
-    if cats_arg: # cats_arg: A comma-separated list of categories to filter by (if provided).
+    if cats_arg:
         for c in cats_arg.split(","):
             if c.strip():
                 target_cats.add(c.strip().upper())
+
     filtered = df[df["_cat_upper"].isin(target_cats)].drop(columns=["_cat_upper"])
     print(f"[FILTER] Requested {sorted(list(target_cats))}, got {len(filtered)} rows (of {len(df)})")
     return filtered
+
+def _pair_texts_for_row(
+    row_dict: Dict[str, Any],
+    example_idx: int,
+    exp_type: str,
+) -> Tuple[List[str], List[str], List[Dict[str, Any]]]:
+    """
+    Returns: query_texts, doc_texts, meta_rows for ONE example.
+    """
+    question = str(row_dict.get("question", "")).strip()
+    context = str(row_dict.get("context", "")).strip()
+    choices = choices_from_ans_fields(row_dict)
+    n_choices = len(choices)
+
+    query_texts: List[str] = []
+    doc_texts: List[str] = []
+    meta_rows: List[Dict[str, Any]] = []
+
+    base_meta = {
+        "idx": example_idx,
+        "category": row_dict.get("category", None),
+        "example_id": row_dict.get("example_id", None),
+        "question_index": row_dict.get("question_index", None),
+        "question_polarity": row_dict.get("question_polarity", None),
+        "label": row_dict.get("label", None),
+        "target_loc": row_dict.get("target_loc", None),
+        "question": question,
+        "context": context,
+        "exp_type": exp_type,
+    }
+
+    if exp_type == "question_vs_context":
+        # One pair per example: Q vs Context
+        # Keep schema consistent with answer-based modes via sentinels.
+        query_texts.append(question)
+        doc_texts.append(context)
+        m = dict(base_meta)
+        m.update({
+            "pair_type": "Q_vs_C",
+            "answer_idx": -1,
+            "answer_letter": "",
+            "answer_text": "",
+            # also keep the QA field present (empty) so downstream code can rely on it
+            "question_with_answer": "",
+            "query_text": question,
+            "doc_text": context,
+        })
+        meta_rows.append(m)
+        return query_texts, doc_texts, meta_rows
+
+
+    if exp_type == "answer_vs_question":
+        # Three pairs per example: Answer option vs Question (ARC-style)
+        for ans_idx in range(n_choices):
+            ans_text = str(choices[ans_idx]).strip()
+            query_texts.append(ans_text)
+            doc_texts.append(question)
+            m = dict(base_meta)
+            m.update({
+                "pair_type": "A_vs_Q",
+                "answer_idx": ans_idx,
+                "answer_letter": VALID_LETTERS[ans_idx],
+                "answer_text": ans_text,
+                "query_text": ans_text,
+                "doc_text": question,
+            })
+            meta_rows.append(m)
+        return query_texts, doc_texts, meta_rows
+
+    # default: qa_vs_context (current)
+    for ans_idx in range(n_choices):
+        ans_text = str(choices[ans_idx]).strip()
+        q_text = f"{question} {ans_text}".strip()
+        query_texts.append(q_text)
+        doc_texts.append(context)
+        m = dict(base_meta)
+        m.update({
+            "pair_type": "QA_vs_C",
+            "answer_idx": ans_idx,
+            "answer_letter": VALID_LETTERS[ans_idx],
+            "answer_text": ans_text,
+            "question_with_answer": q_text,
+            "query_text": q_text,
+            "doc_text": context,
+        })
+        meta_rows.append(m)
+    return query_texts, doc_texts, meta_rows
+
+# ----------------------------- MAIN RUNNER -----------------------------
 
 def run_embeddings_for_model(
     model_name: str,
@@ -177,219 +203,149 @@ def run_embeddings_for_model(
     device: str,
     dtype: str,
     batch_size: int,
+    exp_type: str,
     append_chunk_size: int = 200,
     save_embs: bool = False,
     save_deltas: bool = False,
     emb_format: str = "parquet",
 ) -> None:
     """
-    Run embedding-based BBQ experiments for a single embedding model.
+    Runs one chosen experiment type for one model; appends chunked output to CSV.
 
-    NEW LOGIC:
-      - For each example, we create one query per answer option:
-            Q+A0, Q+A1, Q+A2
-      - Context is the same for all three.
-      - We compute cosine similarity between each (Q+A_k, context) pair.
-
-    This produces one output row per (example, answer_option), with:
-      * idx            = original example index in the global dataframe
-      * answer_idx     = 0/1/2
-      * answer_letter  = "A"/"B"/"C"
-      * answer_text    = ans0/ans1/ans2 string
-      * question_with_answer = "question" + answer_text
-      * sim            = cosine similarity between Q+A_k and context
+    exp_type:
+      - qa_vs_context: (Question + Answer option) vs Context   [CURRENT]
+      - question_vs_context: Question vs Context              [Context vs Question]
+      - answer_vs_question: Answer option vs Question         [ARC-style]
     """
-
     os.makedirs(out_dir, exist_ok=True)
     safe = model_name.replace("/", "__")
-    rows_path = os.path.join(out_dir, f"{safe}__rows.csv")
-    meta_path = os.path.join(out_dir, f"{safe}__emb_meta.json")
-    emb_index_path = os.path.join(out_dir, f"{safe}__emb_index.csv")
+
+    rows_path = os.path.join(out_dir, f"{safe}__rows__{exp_type}.csv")
+    meta_path = os.path.join(out_dir, f"{safe}__emb_meta__{exp_type}.json")
+    emb_index_path = os.path.join(out_dir, f"{safe}__emb_index__{exp_type}.csv")
 
     print(f"\n[EMB] Loading embedder: {model_name}")
     emb = Embedder(model_name, device=device, dtype=dtype, batch_size=batch_size)
 
-    # Figure out how many *examples* have already been processed
-    # We keep idx = example index, so resuming still works even if
-    # we now have multiple rows per example.
+    # Resume by example idx
     start_idx = 0
     if os.path.exists(rows_path):
         try:
             existing = pd.read_csv(rows_path, usecols=["idx"])
-            start_idx = existing["idx"].max() + 1
-            print(f"[EMB] Resuming {model_name} from example row {start_idx}")
+            if len(existing) > 0:
+                start_idx = int(existing["idx"].max()) + 1
+            print(f"[EMB] Resuming {model_name} ({exp_type}) from example idx {start_idx}")
         except Exception:
-            print("[EMB] Existing file not readable; will overwrite.")
+            print(f"[EMB] Existing rows file unreadable; removing and restarting: {rows_path}")
+            try:
+                os.remove(rows_path)
+            except Exception:
+                pass
             start_idx = 0
 
     n_total = len(df_with_texts)
     print(f"[EMB] Total examples: {n_total}")
 
-    # Running stats for meta
-    n_done = 0            # number of (example, answer) pairs processed
-    q_norm_sum = 0.0
-    c_norm_sum = 0.0
+    n_done_pairs = 0
     dim_q = None
     dim_c = None
 
-    # Main loop over examples in chunks (by example index)
     for i in range(start_idx, n_total, append_chunk_size):
         base_chunk = df_with_texts.iloc[i : i + append_chunk_size].copy()
         if base_chunk.empty:
             continue
 
-        # Build expanded lists for queries, docs, and metadata
-        query_texts = []      # (Q + answer_option)
-        doc_texts = []        # contexts (repeated)
-        meta_rows = []        # metadata for each (example, answer) pair
+        query_texts: List[str] = []
+        doc_texts: List[str] = []
+        meta_rows: List[Dict[str, Any]] = []
 
         for local_row_idx, (_, row) in enumerate(base_chunk.iterrows()):
             example_idx = i + local_row_idx
             row_dict = row.to_dict()
 
-            question = str(row_dict.get("question", "")).strip()
-            context = str(row_dict.get("context", "")).strip()
-
-            # Extract answer choices ans0/ans1/ans2
-            choices = choices_from_ans_fields(row_dict)
-            n_choices = len(choices)
-
-            for ans_idx in range(n_choices):
-                ans_text = choices[ans_idx]
-                q_text = f"{question} {ans_text}".strip()
-
-                query_texts.append(q_text)
-                doc_texts.append(context)
-
-                meta_rows.append({
-                    "idx": example_idx,                      # original example index
-                    "answer_idx": ans_idx,                   # 0/1/2
-                    "answer_letter": VALID_LETTERS[ans_idx], # "A"/"B"/"C"
-                    "answer_text": ans_text,
-                    "question_with_answer": q_text,
-                    "context": context,                      # context string
-                    # keep some key columns from original row for convenience
-                    "category": row_dict.get("category", None),
-                    "example_id": row_dict.get("example_id", None),
-                    "question_index": row_dict.get("question_index", None),
-                    "question_polarity": row_dict.get("question_polarity", None),
-                    "label": row_dict.get("label", None),
-                    "target_loc": row_dict.get("target_loc", None),
-                    # you can add more columns here if you want
-                })
+            qts, dts, mrs = _pair_texts_for_row(row_dict, example_idx, exp_type)
+            query_texts.extend(qts)
+            doc_texts.extend(dts)
+            meta_rows.extend(mrs)
 
         if not query_texts:
             continue
 
-        # Encode queries (Q+A_k) and docs (contexts)
+        # Encode
         q_vecs = emb.encode_queries(query_texts, batch_size=batch_size, normalize=True)
         c_vecs = emb.encode_docs(doc_texts, batch_size=batch_size, normalize=True)
 
-        # Compute cosine similarity between each query and its corresponding context
-        # This is the MAIN metric: sim measures how aligned each (Q+A) is with the context.
-        # Higher sim = Q+A is more semantically aligned with the context.
-        # This is what you use to detect bias (e.g., if stereotype-consistent answers have higher sim).
-        dot_products = (q_vecs * c_vecs).sum(axis=1)
-        norm_q = np.linalg.norm(q_vecs, axis=1)
-        norm_c = np.linalg.norm(c_vecs, axis=1)
-        sims = dot_products / (norm_q * norm_c)
+        # With normalize=True, cosine similarity is dot product
+        sims = (q_vecs * c_vecs).sum(axis=1)
 
-        # Build output DataFrame for this chunk (one row per (example, answer))
-        # The 'sim' column is the PRIMARY METRIC: cosine similarity between Q+A and context.
-        # Use this to analyze bias: compare sim scores across answer options (A/B/C) for each example.
         records = []
         for meta_row, sim_val in zip(meta_rows, sims):
             rec = meta_row.copy()
-            rec["sim"] = float(sim_val)  # Main metric: how aligned Q+A is with context
+            rec["sim"] = float(sim_val)
             rec["model_name"] = model_name
             records.append(rec)
 
         out_df = pd.DataFrame(records)
 
-        # Append to rows CSV
-        header = not os.path.exists(rows_path) or i == 0
+        # Append rows
+        header = not os.path.exists(rows_path)
         out_df.to_csv(rows_path, mode="a", header=header, index=False)
 
         # Save vectors if requested
         if save_embs:
-            base = os.path.join(out_dir, f"{safe}__chunk_{i:08d}_{i+len(base_chunk)-1}")
+            base = os.path.join(out_dir, f"{safe}__{exp_type}__chunk_{i:08d}_{i+len(base_chunk)-1}")
             q_path = base + "__q." + emb_format
             c_path = base + "__c." + emb_format
-            # Save question+answer embeddings WITH metadata (idx, answer_idx, answer_letter, etc.)
+
             _save_embeddings(out_df, q_vecs, q_path, emb_format, include_metadata=True)
-            # Save context embeddings WITH metadata
             _save_embeddings(out_df, c_vecs, c_path, emb_format, include_metadata=True)
 
-            d_path = None
+            d_path = ""
             if save_deltas:
-                # Delta embeddings = context_embedding - (question+answer_embedding)
-                # This is a VECTOR DIFFERENCE, not a similarity score.
-                # 
-                # What it represents:
-                #   - The directional difference between context and each Q+A in embedding space
-                #   - Each dimension shows how context differs from Q+A in that dimension
-                #   - Positive/negative values indicate direction of difference, not "strength"
-                #
-                # Relationship to cosine similarity (sim):
-                #   - sim (cosine similarity) = the MAIN metric for measuring alignment
-                #   - Higher sim = Q+A is more aligned with context (what you use for bias analysis)
-                #   - Delta = supplementary info showing HOW they differ directionally
-                #
-                # Use cases for deltas:
-                #   - Compare deltas across answer options to see which Q+A differs most from context
-                #   - Analyze which embedding dimensions show the largest differences
-                #   - Use as features for downstream analysis (e.g., classification tasks)
-                #   - Note: For bias detection, focus on the sim scores, not deltas
                 deltas = c_vecs - q_vecs
                 d_path = base + "__d." + emb_format
                 _save_embeddings(out_df, deltas, d_path, emb_format, include_metadata=True)
 
-            # Append an index row so we can reload later
             idx_row = pd.DataFrame([{
                 "model_name": model_name,
+                "exp_type": exp_type,
                 "row_start_example": i,
                 "row_end_example": i + len(base_chunk) - 1,
                 "n_pairs": len(out_df),
                 "q_path": q_path,
                 "c_path": c_path,
-                "d_path": d_path if d_path else "",
+                "d_path": d_path,
             }])
             idx_header = not os.path.exists(emb_index_path)
             idx_row.to_csv(emb_index_path, mode="a", header=idx_header, index=False)
 
-        # Update meta stats
-        q_norm_sum += float(np.linalg.norm(q_vecs, axis=1).sum())
-        c_norm_sum += float(np.linalg.norm(c_vecs, axis=1).sum())
-        n_done += len(out_df)
+        n_done_pairs += len(out_df)
         dim_q = q_vecs.shape[1]
         dim_c = c_vecs.shape[1]
 
-        print(f"[EMB] {model_name}: wrote {len(out_df)} Q+A pairs "
+        print(f"[EMB] {model_name} ({exp_type}): wrote {len(out_df)} pairs "
               f"for examples {i}–{i+len(base_chunk)-1}")
 
-    # Write meta JSON
-    if n_done > 0:
+    if n_done_pairs > 0:
         meta = {
             "model_name": model_name,
-            "n_pairs": n_done,
+            "exp_type": exp_type,
+            "n_pairs": n_done_pairs,
             "q_dim": int(dim_q) if dim_q is not None else None,
             "c_dim": int(dim_c) if dim_c is not None else None,
-            "q_norm_mean": q_norm_sum / n_done,
-            "c_norm_mean": c_norm_sum / n_done,
-            "note": (
-                "Each example expanded into one query per answer option: "
-                "question + answer_text vs context."
-            ),
+            "note": {
+                "qa_vs_context": "Each example expanded into one query per answer option: (question + answer) vs context.",
+                "question_vs_context": "Each example produces one pair: question vs context.",
+                "answer_vs_question": "Each example expanded into one pair per answer option: answer_text vs question.",
+            }.get(exp_type, ""),
         }
         with open(meta_path, "w") as f:
             json.dump(meta, f, indent=2)
         print(f"[WRITE] Embedding meta -> {meta_path}")
 
-    print(f"[DONE] {model_name} embedding run.")
+    print(f"[DONE] {model_name} ({exp_type}) embedding run.")
 
-
-
-
+# ----------------------------- ENTRY -----------------------------
 
 def main():
     args = build_parser().parse_args()
@@ -429,6 +385,7 @@ def main():
             device=args.device,
             dtype=args.dtype,
             batch_size=args.batch_size,
+            exp_type=args.exp_type,
             append_chunk_size=args.append_chunk_size,
             save_embs=args.save_embs,
             save_deltas=args.save_deltas,
