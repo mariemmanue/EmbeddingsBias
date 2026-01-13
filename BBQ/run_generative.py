@@ -1,6 +1,6 @@
 # run_generative.py
 """
-Example SLURM runs:
+SLURM runs:
 
 nlprun -q jag -p standard -g 1 -r 200G -c 8 -n BBQ-gen-model-mistral7B -o slurm_logs/%x-%j.out \
   "cd /nlp/scr/mtano/EmbeddingsBias/BBQ && \
@@ -29,7 +29,6 @@ nlprun -q jag -p standard -g 1 -r 200G -c 8 -n BBQ-gen-model-gpt-oss-20b -o slur
      --dtype float16 \
      --gen-model openai/gpt-oss-20b \
      --use-logprobs \
-     --subset 100 \
      --append-chunk-size 200 \
      --dataset-id heegyu/BBQ \
      --metadata-csv additional_metadata.csv"
