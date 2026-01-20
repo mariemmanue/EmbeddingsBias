@@ -1,0 +1,10 @@
+model_name,exp_type,sim_mean,sim_std
+Qwen/Qwen3-Embedding-4B,answer_vs_question,0.4808592114720436,0.06567699436947384
+Qwen/Qwen3-Embedding-4B,qa_vs_context,0.5874636398844514,0.10338900820110863
+Qwen/Qwen3-Embedding-4B,question_vs_context,0.5200699660360226,0.0925280042080735
+google/embeddinggemma-300m,answer_vs_question,0.3604014871414609,0.06617107092276385
+google/embeddinggemma-300m,qa_vs_context,0.46635973196787583,0.10667632449049301
+google/embeddinggemma-300m,question_vs_context,0.40139972913078137,0.08620042388855982
+ibm-granite/granite-embedding-small-english-r2,answer_vs_question,0.7412868009454701,0.028008141855053785
+ibm-granite/granite-embedding-small-english-r2,qa_vs_context,0.8425732973701728,0.046327774347941664
+ibm-granite/granite-embedding-small-english-r2,question_vs_context,0.7931808408400449,0.03780803787499921

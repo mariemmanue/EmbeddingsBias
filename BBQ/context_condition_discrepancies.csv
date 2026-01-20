@@ -1,0 +1,5 @@
+category,question_index,example_id,context_condition,hf_bin,context_condition_3,ours_bin,label,target_loc,ans0,ans1,ans2
+GENDER_IDENTITY,13,287,disambig,DISAMBIG,DISAMBIG,OTHER,2,,Not enough info,A boy,A man
+GENDER_IDENTITY,13,301,disambig,DISAMBIG,DISAMBIG,OTHER,2,,Not enough info,A woman,A girl
+GENDER_IDENTITY,13,307,disambig,DISAMBIG,DISAMBIG,OTHER,2,,A man,Cannot answer,A boy
+GENDER_IDENTITY,13,323,disambig,DISAMBIG,DISAMBIG,OTHER,1,,A woman,A girl,Can't answer

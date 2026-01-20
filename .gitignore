@@ -1,47 +1,11 @@
-BBQ/out_embed/ibm-granite__granite-embedding-small-english-r2__rq3_polarity_effect.csv
-BBQ/out_embed/ibm-granite__granite-embedding-small-english-r2__rq2_disambig_gain.csv
-BBQ/out_embed/ibm-granite__granite-embedding-small-english-r2__rows.csv
-BBQ/out_embed/ibm-granite__granite-embedding-small-english-r2__rq_stats_embed.csv
-BBQ/out_embed/ibm-granite__granite-embedding-small-english-r2__rq1_volatility.csv
-BBQ/out_embed/ibm-granite__granite-embedding-small-english-r2__mean_sim_by_category_condition.csv
-BBQ/out_embed/ibm-granite__granite-embedding-small-english-r2__mean_similarity_heatmap.png
-BBQ/out_embed/ibm-granite__granite-embedding-small-english-r2__rq1_volatility_boxswarm.png
-BBQ/out_embed/ibm-granite__granite-embedding-small-english-r2__rq2_forest.png
-BBQ/out_embed/ibm-granite__granite-embedding-small-english-r2__rq3_forest.png
-BBQ/out_embed/ibm-granite__granite-embedding-small-english-r2__rq2_volcano.png
-BBQ/out_embed/ibm-granite__granite-embedding-small-english-r2__rq3_grouped_bars.png
-BBQ/out_gen/sshleifer__tiny-gpt2__acc_matrix.csv
-BBQ/out_gen/sshleifer__tiny-gpt2__bias_matrix.csv
-BBQ/out_gen/sshleifer__tiny-gpt2__rows.csv
-BBQ/out_gen/sshleifer__tiny-gpt2__rate_of_choosing.csv
-BBQ/out_gen/sshleifer__tiny-gpt2__bias_acc_heatmaps.png
-BBQ/out_gen/sshleifer__tiny-gpt2__rq_stats_gen.csv
-BBQ/out_gen/sshleifer__tiny-gpt2__rq1_volatility_boxswarm_gen.png
-BBQ/out_gen/sshleifer__tiny-gpt2__rq1_volatility_gen.csv
-BBQ/out_gen/sshleifer__tiny-gpt2__rq2_disambig_gain_gen.csv
-BBQ/out_gen/sshleifer__tiny-gpt2__rq2_volcano_gen.png
-BBQ/out_gen/sshleifer__tiny-gpt2__rq2_forest_gen.png
-BBQ/out_gen/sshleifer__tiny-gpt2__rq3_forest_gen.png
-BBQ/out_gen/sshleifer__tiny-gpt2__rq3_grouped_bars_gen.png
-BBQ/out_gen/sshleifer__tiny-gpt2__rq3_polarity_effect_gen.csv
-BBQ/out_gen/sshleifer__tiny-gpt2__rate_of_choosing/rate_of_choosing__DISAMBIG_ANTI.png
-BBQ/out_gen/sshleifer__tiny-gpt2__rate_of_choosing/rate_of_choosing__AMBIG.png
-BBQ/out_gen/sshleifer__tiny-gpt2__rate_of_choosing/rate_of_choosing__DISAMBIG_STEREO.png
-BBQ/out_gen/sshleifer__tiny-gpt2__rate_of_choosing/rate_of_choosing__DISAMBIG.png
 BBQ/CODE_EXPLANATION.md
 BBQ/CONTEXT_CONDITION_REVIEW.md
 
-# --- BBQ artifacts ---
-BBQ/output/
-BBQ/embed/
-BBQ/gen models/
-BBQ/*.csv
-BBQ/**/*.csv
+# --- BBQ artifacts --
 BBQ/**/*.parquet
 BBQ/**/*.npy
 BBQ/**/*.pt
 BBQ/**/*.ckpt
-BBQ/**/*.ipynb
 
 # keep metadata tracked
 !BBQ/additional_metadata.csv
