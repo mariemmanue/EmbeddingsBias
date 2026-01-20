@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+#debug_context_condition.py 
 """
 Debug script to check for discrepancies between computed context_condition_3
 and any existing context condition field in the BBQ dataset.

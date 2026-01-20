@@ -348,6 +348,7 @@ def evaluate_model_generative_stream(
             global_idx = i + local_j
 
             question = str(r.get("question", "")).strip()
+            example_id = r.get("example_id", None).strip()
             context = str(r.get("context", "")).strip()
             cat = str(r.get("category", "")).strip()
             qi = str(r.get("question_index", global_idx)).strip()
@@ -413,6 +414,7 @@ def evaluate_model_generative_stream(
                 "idx": global_idx,
                 "category": cat,
                 "question_index": qi,
+                "example_id": example_id,   # <-- add this
                 "question_polarity": qp,
                 "context_condition_3": cc3,
                 "choices": " ||| ".join(choices),

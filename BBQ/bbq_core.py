@@ -105,11 +105,20 @@ def gold_letter_from_numeric_label(row: Dict[str, Any], n_choices: int) -> str:
     except Exception:
         return str(lab).strip().upper()[:1]
 
+# _UNKNOWN_PAT = re.compile(
+#     r"(can't be determined|cannot be determined|undetermined|not determined|not answerable|cannot answer|"
+#     r"not enough (?:info|information)|insufficient (?:info|information)|unknown|"
+#     r"can't tell|cannot tell|can't answer|not sure|not known|unclear|impossible|not possible)",
+#     re.I
+# )
+
 _UNKNOWN_PAT = re.compile(
-    r"(can't be determined|cannot be determined|undetermined|not determined|not answerable|cannot answer|"
-    r"not enough (?:info|information)|insufficient (?:info|information)|unknown|"
-    r"can't tell|cannot tell|not sure|not known|unclear|impossible|not possible)",
-    re.I
+    r"(can't be determined|cannot be determined|cant be determined|undetermined|"
+    r"not determined|not answerable|cannot answer|can't answer|cant answer|"
+    r"not enough ?(?:info|information)|insufficient ?(?:info|information)|"
+    r"unknown|can't tell|cannot tell|cant tell|not sure|not known|unclear|"
+    r"impossible|not possible)",
+    re.I,
 )
 
 
@@ -416,8 +425,10 @@ def prepare_df_from_hf(
         how="left",
         validate="m:1",
     )
+    golds_idx, scs_idx, sis_idx, cc3, tgt_cond = [], [], [], [], []
 
-    golds_idx, scs_idx, sis_idx, cc3 = [], [], [], []
+    # If you later also gate by HF context_condition, you can precompute hf_bin here.
+    # For now we keep your existing pure-index logic.
 
     for r in df.to_dict(orient="records"):
         choices = choices_from_ans_fields(r)
@@ -451,17 +462,87 @@ def prepare_df_from_hf(
         else:
             cc = "DISAMBIG"
 
+        # 6) Target condition label (relative to stereotype)
+        if gold_idx is None:
+            tc = ""
+        elif sc_idx is not None and gold_idx == sc_idx:
+            tc = "SC"
+        elif si_idx is not None and gold_idx == si_idx:
+            tc = "SI"
+        elif unk_idx is not None and gold_idx == unk_idx:
+            tc = "UNK"
+        else:
+            tc = ""
+
         golds_idx.append(gold_idx)
         scs_idx.append(sc_idx)
         sis_idx.append(si_idx)
         cc3.append(cc)
+        tgt_cond.append(tc)
 
-    # Optionally keep the index columns for debugging
+    # golds_idx, scs_idx, sis_idx, cc3 = [], [], [], []
+
+    # for r in df.to_dict(orient="records"):
+    #     choices = choices_from_ans_fields(r)
+    #     n = len(choices)
+
+    #     # 1) Unknown index: ONLY via text, no hard-coded default
+    #     unk_idx = next((j for j in range(n) if _is_unknown_choice(choices[j])), None)
+
+    #     # 2) Stereotype-consistent index from metadata
+    #     tl = r.get("target_loc", pd.NA)
+    #     sc_idx = int(tl) if pd.notna(tl) and 0 <= int(tl) < n else None
+
+    #     # 3) Anti-stereotype index = first index that is not stereo and not unknown
+    #     si_candidates = [j for j in range(n) if j != sc_idx and j != unk_idx]
+    #     si_idx = si_candidates[0] if si_candidates else None
+
+    #     # 4) Gold (correct) index from numeric label
+    #     lab = r.get("label", None)
+    #     if lab is None or (isinstance(lab, float) and np.isnan(lab)):
+    #         gold_idx = None
+    #     else:
+    #         gold_idx = int(lab) if 0 <= int(lab) < n else None
+
+    #     # 5) Determine 3-way context condition using indices
+    #     if gold_idx is not None and unk_idx is not None and gold_idx == unk_idx:
+    #         cc = "AMBIG"
+    #     elif gold_idx is not None and sc_idx is not None and gold_idx == sc_idx:
+    #         cc = "DISAMBIG_STEREO"
+    #     elif gold_idx is not None and si_idx is not None and gold_idx == si_idx:
+    #         cc = "DISAMBIG_ANTI"
+    #     else:
+    #         cc = "DISAMBIG"
+
+    #     golds_idx.append(gold_idx)
+    #     scs_idx.append(sc_idx)
+    #     sis_idx.append(si_idx)
+    #     cc3.append(cc)
+
+    # # Optionally keep the index columns for debugging
+    # df["gold_idx"] = golds_idx
+    # df["sc_idx"] = scs_idx
+    # df["si_idx"] = sis_idx
+
+    # # Map indices back to letters for compatibility with older code
+    # df["gold_label"] = [
+    #     VALID_LETTERS[i] if i is not None and 0 <= i < len(VALID_LETTERS) else ""
+    #     for i in golds_idx
+    # ]
+    # df["sc_label"] = [
+    #     VALID_LETTERS[i] if i is not None and 0 <= i < len(VALID_LETTERS) else None
+    #     for i in scs_idx
+    # ]
+    # df["si_label"] = [
+    #     VALID_LETTERS[i] if i is not None and 0 <= i < len(VALID_LETTERS) else None
+    #     for i in sis_idx
+    # ]
+    # df["context_condition_3"] = cc3
+
     df["gold_idx"] = golds_idx
-    df["sc_idx"] = scs_idx
-    df["si_idx"] = sis_idx
+    df["sc_idx"]   = scs_idx
+    df["si_idx"]   = sis_idx
 
-    # Map indices back to letters for compatibility with older code
     df["gold_label"] = [
         VALID_LETTERS[i] if i is not None and 0 <= i < len(VALID_LETTERS) else ""
         for i in golds_idx
@@ -475,6 +556,7 @@ def prepare_df_from_hf(
         for i in sis_idx
     ]
     df["context_condition_3"] = cc3
+    df["target_condition"] = tgt_cond   # <--- NEW
 
     # Normalize some categorical fields
     for col in ["category", "question_polarity"]:

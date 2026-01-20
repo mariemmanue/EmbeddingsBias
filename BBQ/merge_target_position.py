@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+#merge_target_position.py 
+
 import argparse
 import glob
 import os
@@ -59,7 +61,9 @@ def merge_one(
         print(f"[SKIP] {out_path} exists (use --overwrite)")
         return out_path
 
-    merged = rows_df.merge(base_keys, on=need, how="left", validate="m:1")
+    # ensure uniqueness on the right, then merge without validate
+    base_keys = base_keys.drop_duplicates(subset=need)
+    merged = rows_df.merge(base_keys, on=need, how="left")
 
     # coverage checks
     cov_pos = merged["target_position"].notna().mean() if "target_position" in merged.columns else 0.0
