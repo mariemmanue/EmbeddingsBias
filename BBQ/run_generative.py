@@ -1,4 +1,5 @@
 # run_generative.py
+make sure target conditoon is adddedd
 """
 SLURM runs:
 
